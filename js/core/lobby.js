@@ -21,8 +21,9 @@ function renderLobby(sessionId, playerId, isMod) {
     <ul class="player-list" id="player-list">
       <!-- Players are listed here in real time -->
     </ul>
-    <button id="ready-btn">Ready</button>
-    ${isModerator ? `<button id="start-btn" disabled>Start Game (need ${READY_THRESHOLD}+ ready)</button>` : ''}
+    ${isModerator
+      ? `<button id="start-btn" disabled>Start Game (need ${READY_THRESHOLD}+ ready)</button>`
+      : `<button id="ready-btn">Ready</button>`}
     <button class="logout-btn secondary-btn">Leave / Logout</button>
   `;
 
@@ -48,6 +49,16 @@ function renderLobby(sessionId, playerId, isMod) {
     .onSnapshot(snapshot => {
       const playerList = document.getElementById('player-list');
       if (!playerList) return; // user has navigated away from the lobby screen
+
+      // Non-moderator players have a players/{uid} doc for as long as
+      // they're in the room. If it's gone, the moderator kicked them —
+      // clean up the stale "resume this room" pointer and send them back
+      // to the room-choice screen instead of leaving them stuck staring
+      // at a lobby they're no longer part of.
+      if (!isModerator && !snapshot.docs.some(doc => doc.id === currentPlayerId)) {
+        handleRemovedFromLobby();
+        return;
+      }
 
       playerList.innerHTML = '';
       let readyCount = 0;
@@ -82,10 +93,23 @@ function renderLobby(sessionId, playerId, isMod) {
       }
     });
 
-  document.getElementById('ready-btn').addEventListener('click', toggleReady);
   if (isModerator) {
     document.getElementById('start-btn').addEventListener('click', startGame);
+  } else {
+    document.getElementById('ready-btn').addEventListener('click', toggleReady);
   }
+}
+
+async function handleRemovedFromLobby() {
+  if (lobbyUnsubscribe) {
+    lobbyUnsubscribe();
+    lobbyUnsubscribe = null;
+  }
+  await db.collection('werewolf_users').doc(currentPlayerId)
+    .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
+    .catch(() => {}); // best-effort; not worth blocking on
+  alert("You were removed from the room by the moderator.");
+  showScreen('lobby-choice-screen');
 }
 
 async function toggleReady() {
@@ -113,8 +137,7 @@ async function startGame() {
   await db.collection('werewolf_sessions').doc(currentSessionId).update({ status: 'started' });
 
   // The moderator jumps to the game screen immediately, with the full role list
-  // and the eliminate/voting controls.
-  const myIndex = players.findIndex(p => p.id === currentPlayerId);
-  const myRole = roles[myIndex];
-  renderGameScreen(currentSessionId, currentPlayerId, true, myRole);
+  // and the eliminate/voting controls. The moderator never has a players/{uid}
+  // doc (they're not dealt a role), so pass null rather than an undefined role.
+  renderGameScreen(currentSessionId, currentPlayerId, true, null);
 }
