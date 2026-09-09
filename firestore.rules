@@ -37,9 +37,22 @@ service cloud.firestore {
         allow create: if request.auth != null && request.auth.uid == playerId;
         // NOTE: currently any signed-in player can update any player doc
         // (this is what lets the moderator write role assignments to
-        // everyone via a batch write). Fine for a supervised classroom
-        // game; tighten later if this becomes unsupervised or public.
+        // everyone via a batch write, and eliminate/kick any player).
+        // Fine for a supervised classroom game; tighten later if this
+        // becomes unsupervised or public.
         allow update: if request.auth != null;
+        // Lets the moderator remove a no-show from the lobby roster.
+        allow delete: if request.auth != null;
+      }
+
+      match /votes/{voterId} {
+        allow read: if request.auth != null;
+        // A player may only ever write their own vote...
+        allow create, update: if request.auth != null && request.auth.uid == voterId;
+        // ...but the moderator's reveal step clears everyone's vote docs
+        // between rounds, so delete stays permissive like the rest of
+        // this classroom-trust-model app.
+        allow delete: if request.auth != null;
       }
     }
 

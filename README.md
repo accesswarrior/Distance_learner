@@ -32,6 +32,29 @@ This repo reuses the existing **access-warrior-1d789** Firebase project
    Firebase Hosting as a second site on the same project, Netlify, etc.) —
    only Auth and Firestore need to stay on Firebase.
 
+## In-game moderator controls
+
+Once a game is started, the moderator's phone shows the full role list plus:
+
+- **Eliminate** button next to any living player — an immediate manual
+  override, for a night kill the group resolved out loud or for pulling
+  someone who has to step away. This is also how the total number of
+  players in the game changes after Start Game (before Start Game, use
+  **Remove** in the lobby roster instead).
+- **Start Voting / Reveal Result** — moves the day-phase vote into the app.
+  Players tap a name from the alive roster; the moderator sees a live
+  "X of Y voted" count (never who, never a running tally) and reveals
+  whenever they're ready. If the top vote-getter is a Werewolf, they're
+  named and eliminated ("🐺 A Werewolf was voted out: X"). If not — or if
+  it's a tie — the app only ever says "Nobody was voted out," with no name
+  or count shown to anyone, moderator included. This keeps a near-miss
+  vote just as hidden as a wasted one.
+- A win banner appears automatically for everyone the moment a win
+  condition (Section 6 of the coordinator guide) is met.
+
+New Firestore collection: `werewolf_sessions/{sessionId}/votes/{voterId}`,
+cleared automatically after every reveal.
+
 ## Known limitations (by design, for a supervised classroom setting)
 
 - Any signed-in player can technically write to any other player's
