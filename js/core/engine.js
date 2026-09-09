@@ -65,3 +65,12 @@ async function joinSession(code, uid, username) {
 
   return sessionDoc.data().moderatorId === uid;
 }
+
+// Lets the moderator remove a player from the lobby roster entirely —
+// e.g. a no-show, a duplicate join, or someone who backed out. This is
+// how the moderator adjusts the total headcount before Start Game; the
+// live "X players in room" count updates automatically because it's
+// just a listener on this same collection.
+async function kickPlayer(sessionId, uid) {
+  await db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid).delete();
+}

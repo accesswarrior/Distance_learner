@@ -33,6 +33,17 @@ function renderLobby(sessionId, playerId, isMod) {
     lobbyUnsubscribe = null;
   }
 
+  // Moderator can remove a no-show or duplicate join before Start Game.
+  // Attached once (delegated on the static <ul>, not rebuilt per snapshot)
+  // so it never stacks duplicate listeners across re-renders.
+  if (isModerator) {
+    document.getElementById('player-list').addEventListener('click', (e) => {
+      if (e.target.classList.contains('kick-btn')) {
+        kickPlayer(currentSessionId, e.target.dataset.uid);
+      }
+    });
+  }
+
   lobbyUnsubscribe = db.collection(`werewolf_sessions/${sessionId}/players`)
     .onSnapshot(snapshot => {
       const playerList = document.getElementById('player-list');
@@ -44,16 +55,18 @@ function renderLobby(sessionId, playerId, isMod) {
       snapshot.forEach(doc => {
         const data = doc.data();
         const li = document.createElement('li');
-        li.textContent = `${data.username} ${data.ready ? '✔️' : ''}`;
+        const canKick = isModerator && doc.id !== currentPlayerId;
+        li.innerHTML = `<span>${data.username} ${data.ready ? '✔️' : ''}</span>` +
+          (canKick ? `<button class="kick-btn secondary-btn" data-uid="${doc.id}">Remove</button>` : '');
         playerList.appendChild(li);
         if (data.ready) readyCount++;
 
         // Non-moderator players don't call startGame() themselves, so this
-        // listener is what moves them to the role screen once the
+        // listener is what moves them to the game screen once the
         // moderator assigns roles.
         const onLobbyScreen = document.getElementById('lobby-screen').classList.contains('active');
         if (!isModerator && doc.id === currentPlayerId && data.role && onLobbyScreen) {
-          showRoleScreen(data.role, null);
+          renderGameScreen(currentSessionId, currentPlayerId, false, data.role);
         }
       });
 
@@ -99,8 +112,9 @@ async function startGame() {
   await batch.commit();
   await db.collection('werewolf_sessions').doc(currentSessionId).update({ status: 'started' });
 
-  // The moderator jumps to the role screen immediately, with the full role list.
+  // The moderator jumps to the game screen immediately, with the full role list
+  // and the eliminate/voting controls.
   const myIndex = players.findIndex(p => p.id === currentPlayerId);
   const myRole = roles[myIndex];
-  showRoleScreen(myRole, players.map((p, i) => ({ name: p.username, role: roles[i] })));
+  renderGameScreen(currentSessionId, currentPlayerId, true, myRole);
 }
