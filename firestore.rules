@@ -21,7 +21,11 @@ service cloud.firestore {
     match /werewolf_users/{uid} {
       allow read: if request.auth != null;
       allow create: if request.auth != null && request.auth.uid == uid;
-      allow update: if false; // no profile editing yet
+      // Only the account owner can write, and only to set/clear their own
+      // currentSessionId (used to resume a room after logout / on a new
+      // device). Still no arbitrary profile editing.
+      allow update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentSessionId']);
     }
 
     match /werewolf_sessions/{sessionId} {
