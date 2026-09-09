@@ -1,0 +1,49 @@
+// firestore.rules — Werewolf-specific section
+//
+// IMPORTANT: this project (access-warrior-1d789) is shared with the
+// ELTP Quiz Hub. Do NOT deploy this file as-is if the Quiz Hub already
+// has its own firestore.rules — that would overwrite its rules.
+// Instead, copy the `match` blocks below into the *same*
+// `match /databases/{database}/documents { ... }` block that already
+// contains the Quiz Hub's rules.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Werewolf game rules (merge these into the existing block) ---
+
+    match /werewolf_usernames/{username} {
+      allow read: if false; // only used server-side (client checks existence, not content)
+      allow create: if request.auth != null;
+    }
+
+    match /werewolf_users/{uid} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.auth.uid == uid;
+      allow update: if false; // no profile editing yet
+    }
+
+    match /werewolf_sessions/{sessionId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      // NOTE: currently any signed-in user can update session status.
+      // Tighten to `resource.data.moderatorId == request.auth.uid` once
+      // you're comfortable restricting "start game" to the moderator only.
+      allow update: if request.auth != null;
+
+      match /players/{playerId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null && request.auth.uid == playerId;
+        // NOTE: currently any signed-in player can update any player doc
+        // (this is what lets the moderator write role assignments to
+        // everyone via a batch write). Fine for a supervised classroom
+        // game; tighten later if this becomes unsupervised or public.
+        allow update: if request.auth != null;
+      }
+    }
+
+    // --- Quiz Hub rules go here too — do not remove them when merging ---
+
+  }
+}

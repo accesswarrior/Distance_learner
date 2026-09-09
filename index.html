@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Werewolf - School Game</title>
+  <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Loading screen -->
+    <div class="screen active" id="loading-screen">
+      <div class="spinner"></div>
+      <p>Loading...</p>
+    </div>
+
+    <!-- Authentication screen -->
+    <div class="screen" id="auth-screen">
+      <div class="auth-card">
+        <h1 class="game-title">🐺 Werewolf</h1>
+        <p class="tagline">The classic social deduction game</p>
+
+        <div class="auth-form">
+          <input type="text" id="username" placeholder="Username" autocomplete="off">
+          <input type="password" id="pin" placeholder="6-digit PIN" maxlength="6" inputmode="numeric" pattern="[0-9]*">
+
+          <button id="login-btn" class="primary-btn">Login</button>
+          <button id="signup-btn" class="secondary-btn">Sign Up</button>
+
+          <p id="auth-error" class="error-message"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lobby choice screen: create a new room or join one -->
+    <div class="screen" id="lobby-choice-screen">
+      <div class="auth-card">
+        <h2>Welcome, <span id="welcome-username"></span></h2>
+
+        <button id="create-room-btn" class="primary-btn">Create Room</button>
+
+        <div class="join-room-form">
+          <input type="text" id="join-code-input" placeholder="Room Code" maxlength="6" autocomplete="off">
+          <button id="join-room-btn" class="secondary-btn">Join Room</button>
+        </div>
+
+        <p id="lobby-choice-error" class="error-message"></p>
+
+        <button class="logout-btn secondary-btn">Logout</button>
+      </div>
+    </div>
+
+    <!-- Lobby (waiting room) screen -->
+    <div class="screen" id="lobby-screen">
+      <div class="lobby-container" id="lobby-content">
+        <!-- Populated dynamically by lobby.js -->
+      </div>
+    </div>
+
+    <!-- Role reveal screen -->
+    <div class="screen" id="role-screen">
+      <div class="role-container" id="role-content"></div>
+    </div>
+  </div>
+
+  <!-- Firebase SDK (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
+
+  <!-- Core scripts -->
+  <script src="js/core/firebaseConfig.js"></script>
+  <script src="js/core/auth.js"></script>
+  <script src="js/core/engine.js"></script>
+  <script src="js/core/lobby.js"></script>
+  <script src="js/games/werewolf/rules.js"></script>
+  <script src="js/games/werewolf/ui.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
