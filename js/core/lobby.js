@@ -17,6 +17,7 @@ function renderLobby(sessionId, playerId, isMod) {
   lobbyContent.innerHTML = `
     <h2>Game Lobby</h2>
     <p>Room Code: <strong id="room-code-display">${sessionId}</strong></p>
+    <p id="player-count-display">0 players in room</p>
     <ul class="player-list" id="player-list">
       <!-- Players are listed here in real time -->
     </ul>
@@ -55,6 +56,12 @@ function renderLobby(sessionId, playerId, isMod) {
           showRoleScreen(data.role, null);
         }
       });
+
+      const totalPlayers = snapshot.size;
+      const countDisplay = document.getElementById('player-count-display');
+      if (countDisplay) {
+        countDisplay.textContent = `${totalPlayers} player${totalPlayers === 1 ? '' : 's'} in room (${readyCount} ready)`;
+      }
 
       const startBtn = document.getElementById('start-btn');
       if (isModerator && startBtn) {
