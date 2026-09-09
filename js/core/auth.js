@@ -20,15 +20,15 @@ document.getElementById('signup-btn').addEventListener('click', async () => {
   const email = usernameToEmail(username);
 
   try {
-    const usernameDoc = await db.collection('werewolf_usernames').doc(username).get();
-    if (usernameDoc.exists) {
-      errorEl.textContent = "Username already taken.";
-      return;
-    }
-
+    // No pre-check read here: an unauthenticated client can't (and
+    // shouldn't be able to) read werewolf_usernames. Instead we let
+    // Firebase Auth itself reject the duplicate via the synthetic email,
+    // since "username@werewolf.local" can only exist once.
     const userCredential = await auth.createUserWithEmailAndPassword(email, pin);
     const uid = userCredential.user.uid;
 
+    // These writes happen AFTER auth succeeds, so request.auth is now set
+    // and matches the rules (create-only, uid must match the signed-in user).
     await db.collection('werewolf_usernames').doc(username).set({ uid });
     await db.collection('werewolf_users').doc(uid).set({
       username: username,
@@ -39,7 +39,11 @@ document.getElementById('signup-btn').addEventListener('click', async () => {
     // main.js's onAuthStateChanged listener handles the screen switch.
   } catch (error) {
     console.error("Signup error:", error);
-    errorEl.textContent = error.message;
+    if (error.code === 'auth/email-already-in-use') {
+      errorEl.textContent = "Username already taken.";
+    } else {
+      errorEl.textContent = error.message;
+    }
   }
 });
 
