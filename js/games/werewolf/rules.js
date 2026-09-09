@@ -1,8 +1,9 @@
 // js/games/werewolf/rules.js
 
 function assignRoles(playerCount) {
-  // Simple distribution: 2 werewolves, 1 seer, 1 doctor, rest villagers.
-  const numWerewolves = 2;
+  // Scales werewolves roughly 1 per 4 players (minimum 2), keeps seer and
+  // doctor fixed at 1 each, and fills the rest with villagers.
+  const numWerewolves = Math.max(2, Math.round(playerCount / 4));
   const numSeer = 1;
   const numDoctor = 1;
   const numVillagers = Math.max(0, playerCount - numWerewolves - numSeer - numDoctor);
