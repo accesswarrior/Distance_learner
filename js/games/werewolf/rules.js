@@ -21,3 +21,15 @@ function assignRoles(playerCount) {
   }
   return roles;
 }
+
+// players: array of { role, alive }. Returns 'werewolves', 'villagers', or
+// null if the game should continue. Checked after every elimination —
+// whether it came from a vote or the moderator's manual "Eliminate" button.
+function checkWinCondition(players) {
+  const aliveWerewolves = players.filter(p => p.alive !== false && p.role === 'werewolf').length;
+  const aliveOthers = players.filter(p => p.alive !== false && p.role !== 'werewolf').length;
+
+  if (aliveWerewolves === 0) return 'villagers';
+  if (aliveWerewolves >= aliveOthers) return 'werewolves';
+  return null;
+}
