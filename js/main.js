@@ -8,6 +8,50 @@ function showScreen(screenId) {
 
 let currentUsername = null;
 
+// If this account was in a room when it got logged out (or logs in from a
+// different device), drop it straight back into that room instead of the
+// room-choice screen. Returns true if a resume happened.
+async function tryResumeSession(uid) {
+  const userDoc = await db.collection('werewolf_users').doc(uid).get();
+  const sessionId = userDoc.exists ? userDoc.data().currentSessionId : null;
+  if (!sessionId) return false;
+
+  const sessionRef = db.collection('werewolf_sessions').doc(sessionId);
+  const sessionDoc = await sessionRef.get();
+
+  // Room no longer exists — clear the stale pointer and fall back normally.
+  if (!sessionDoc.exists) {
+    await db.collection('werewolf_users').doc(uid)
+      .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
+      .catch(() => {});
+    return false;
+  }
+
+  const sessionData = sessionDoc.data();
+  const isMod = sessionData.moderatorId === uid;
+  let myRole = null;
+
+  if (!isMod) {
+    const playerDoc = await sessionRef.collection('players').doc(uid).get();
+    if (!playerDoc.exists) {
+      // Was removed from the lobby (or never actually a player) — stale pointer.
+      await db.collection('werewolf_users').doc(uid)
+        .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
+        .catch(() => {});
+      return false;
+    }
+    myRole = playerDoc.data().role || null;
+  }
+
+  if (sessionData.status === 'lobby') {
+    renderLobby(sessionId, uid, isMod);
+    showScreen('lobby-screen');
+  } else {
+    renderGameScreen(sessionId, uid, isMod, myRole); // this call shows 'role-screen' itself
+  }
+  return true;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   showScreen('loading-screen');
 
@@ -17,7 +61,10 @@ document.addEventListener('DOMContentLoaded', () => {
       currentUsername = userDoc.exists ? userDoc.data().username : user.email.split('@')[0];
       document.getElementById('welcome-username').textContent = currentUsername;
 
-      showScreen('lobby-choice-screen');
+      const resumed = await tryResumeSession(user.uid);
+      if (!resumed) {
+        showScreen('lobby-choice-screen');
+      }
     } else {
       currentUsername = null;
 
