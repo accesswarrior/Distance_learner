@@ -39,7 +39,11 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
     const iAmAlive = !me || me.alive !== false;
     const alivePlayers = players.filter(p => p.alive !== false);
 
-    let html = `<div class="role-card">You are: <strong>${myRole.toUpperCase()}</strong>${iAmAlive ? '' : ' (eliminated)'}</div>`;
+    // Moderators are never dealt a role, so myRole is null for them —
+    // show a distinct card instead of a player role card.
+    let html = myRole
+      ? `<div class="role-card">You are: <strong>${myRole.toUpperCase()}</strong>${iAmAlive ? '' : ' (eliminated)'}</div>`
+      : `<div class="role-card">You are the <strong>Game Master</strong> — running this round.</div>`;
 
     if (sessionData.winner) {
       const side = sessionData.winner === 'werewolves' ? '\ud83d\udc3a Werewolves' : '\ud83e\uddd1\u200d\ud83c\udf3e Villagers';
