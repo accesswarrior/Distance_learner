@@ -64,23 +64,36 @@ async function joinSession(code, uid, username) {
     throw new Error("Room not found. Check the code and try again.");
   }
 
-  if (sessionDoc.data().status !== 'lobby') {
-    throw new Error("This game has already started.");
-  }
+  const sessionData = sessionDoc.data();
+  const isMod = sessionData.moderatorId === uid;
 
-  const isMod = sessionDoc.data().moderatorId === uid;
-
-  // The moderator rejoining their own room by code (e.g. resuming on a new
-  // device) still shouldn't get a players/{uid} doc — see createSession.
   if (!isMod) {
-    await sessionRef.collection('players').doc(uid).set({
-      username: username,
-      ready: false,
-      role: null,
-      alive: true
-    }, { merge: true });
+    const playerRef = sessionRef.collection('players').doc(uid);
+    const existingPlayerDoc = await playerRef.get();
+
+    // A brand-new player can only join while the room is still in the lobby.
+    // Someone who is ALREADY in this game — logged out or switched devices
+    // mid-round and is re-entering the code — can always get back in,
+    // no matter what phase the game is in. This is what lets a player who
+    // accidentally left, or lost connection, walk back in with the same code
+    // instead of being told the room is "full" / "already started".
+    if (sessionData.status !== 'lobby' && !existingPlayerDoc.exists) {
+      throw new Error("This game has already started.");
+    }
+
+    if (!existingPlayerDoc.exists) {
+      await playerRef.set({
+        username: username,
+        ready: false,
+        role: null,
+        alive: true
+      });
+    }
+    // else: they're already in the room — leave their role/alive/ready as is.
   }
 
+  // Remember which room this account is in, so a later re-login (same
+  // device or a new one) can drop them straight back into it.
   await db.collection('werewolf_users').doc(uid).update({ currentSessionId: code });
 
   return isMod;
