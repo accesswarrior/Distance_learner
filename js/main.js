@@ -8,6 +8,32 @@ function showScreen(screenId) {
 
 let currentUsername = null;
 
+// Sends someone into a room at the correct screen for its current phase —
+// lobby if it hasn't started, the live game screen (with their existing
+// role, if any) if it has. Used both for a fresh "Join Room" and for
+// resuming a session after login.
+async function enterRoom(sessionId, uid, isMod) {
+  const sessionDoc = await db.collection('werewolf_sessions').doc(sessionId).get();
+  if (!sessionDoc.exists) {
+    showScreen('lobby-choice-screen');
+    return;
+  }
+  const sessionData = sessionDoc.data();
+
+  if (sessionData.status === 'lobby') {
+    renderLobby(sessionId, uid, isMod);
+    showScreen('lobby-screen');
+    return;
+  }
+
+  let myRole = null;
+  if (!isMod) {
+    const playerDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid).get();
+    myRole = playerDoc.exists ? (playerDoc.data().role || null) : null;
+  }
+  renderGameScreen(sessionId, uid, isMod, myRole); // shows the game screen itself
+}
+
 // If this account was in a room when it got logged out (or logs in from a
 // different device), drop it straight back into that room instead of the
 // room-choice screen. Returns true if a resume happened.
@@ -29,7 +55,6 @@ async function tryResumeSession(uid) {
 
   const sessionData = sessionDoc.data();
   const isMod = sessionData.moderatorId === uid;
-  let myRole = null;
 
   if (!isMod) {
     const playerDoc = await sessionRef.collection('players').doc(uid).get();
@@ -40,15 +65,9 @@ async function tryResumeSession(uid) {
         .catch(() => {});
       return false;
     }
-    myRole = playerDoc.data().role || null;
   }
 
-  if (sessionData.status === 'lobby') {
-    renderLobby(sessionId, uid, isMod);
-    showScreen('lobby-screen');
-  } else {
-    renderGameScreen(sessionId, uid, isMod, myRole); // this call shows 'role-screen' itself
-  }
+  await enterRoom(sessionId, uid, isMod);
   return true;
 }
 
@@ -106,8 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const uid = auth.currentUser.uid;
       const isMod = await joinSession(code, uid, currentUsername);
-      renderLobby(code, uid, isMod);
-      showScreen('lobby-screen');
+      await enterRoom(code, uid, isMod); // routes to lobby OR live game screen
     } catch (error) {
       console.error("Join room error:", error);
       errorEl.textContent = error.message || "Couldn't join room.";
