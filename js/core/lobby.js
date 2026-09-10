@@ -120,9 +120,15 @@ async function toggleReady() {
 }
 
 async function startGame() {
+  // Defensive: strip out any stray moderator doc left behind by rooms
+  // created before this fix, so an old room can't hand the moderator a role.
   const playersSnapshot = await db.collection(`werewolf_sessions/${currentSessionId}/players`).get();
   const players = [];
-  playersSnapshot.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
+  playersSnapshot.forEach(doc => {
+    if (doc.id !== currentPlayerId) {
+      players.push({ id: doc.id, ...doc.data() });
+    }
+  });
 
   const roles = assignRoles(players.length); // from js/games/werewolf/rules.js
 
