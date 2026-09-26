@@ -1,5 +1,7 @@
 // js/games/werewolf/ui.js
-// Live game screen. Two key architectural points:
+// Live game screen.
+//
+// Two architectural points worth keeping in mind:
 //
 // 1. The player's role is DERIVED from the live players array on every
 //    render, never captured once. This is what makes Chief succession
@@ -8,6 +10,12 @@
 // 2. Removed players (participationStatus === 'removed') are excluded
 //    from every "who counts" calculation: ack gates, vote counts, night
 //    target lists, Chief targeting. Their doc is preserved as history.
+//
+// Escaping: every interpolation of a user-supplied string (displayName,
+// username, and anything derived from them) goes through esc(), which is
+// defined in engine.js (loaded before this file). shownName() returns the
+// raw name on purpose — escaping at the interpolation site avoids
+// double-escaping when a name is compared, stored, or re-rendered.
 
 let gameUnsubscribers = [];
 
@@ -76,31 +84,34 @@ function renderGameScreen(sessionId, playerId, isMod) {
 
   function renderAnnouncement(a) {
     if (a.type === 'werewolf_out') {
-      return `<div class="banner reveal">\ud83d\udc3a A Werewolf was voted out: <strong>${a.name}</strong></div>`;
+      return `<div class="banner reveal">\ud83d\udc3a A Werewolf was voted out: <strong>${esc(a.name)}</strong></div>`;
     }
     if (a.type === 'villager_out') {
-      return `<div class="banner reveal">\ud83d\udc80 <strong>${a.name}</strong> was voted out \u2014 they were <em>not</em> a Werewolf.</div>`;
+      return `<div class="banner reveal">\ud83d\udc80 <strong>${esc(a.name)}</strong> was voted out \u2014 they were <em>not</em> a Werewolf.</div>`;
     }
     if (a.type === 'night_death') {
-      return `<div class="banner reveal">\ud83d\udc80 <strong>${a.names.join(', ')}</strong> died during the night.</div>`;
+      const names = a.names.map(n => esc(n)).join(', ');
+      return `<div class="banner reveal">\ud83d\udc80 <strong>${names}</strong> died during the night.</div>`;
     }
     if (a.type === 'no_night_death') {
       return `<div class="banner reveal">\u2600\ufe0f No one died last night.</div>`;
     }
     if (a.type === 'tie') {
-      return `<div class="banner reveal">It's a tie between <strong>${a.names.join(', ')}</strong> \u2014 vote again, only between them.</div>`;
+      const names = a.names.map(n => esc(n)).join(', ');
+      return `<div class="banner reveal">It's a tie between <strong>${names}</strong> \u2014 vote again, only between them.</div>`;
     }
     if (a.type === 'still_tied') {
-      return `<div class="banner reveal">Still tied between <strong>${a.names.join(', ')}</strong> \u2014 no one is eliminated this round.</div>`;
+      const names = a.names.map(n => esc(n)).join(', ');
+      return `<div class="banner reveal">Still tied between <strong>${names}</strong> \u2014 no one is eliminated this round.</div>`;
     }
     if (a.type === 'hunter_pending') {
-      return `<div class="banner">\ud83c\udff9 <strong>${a.name}</strong> was eliminated and is taking their final shot...</div>`;
+      return `<div class="banner">\ud83c\udff9 <strong>${esc(a.name)}</strong> was eliminated and is taking their final shot...</div>`;
     }
     if (a.type === 'hunter_shot') {
-      return `<div class="banner reveal">\ud83c\udff9 ${a.hunterName}'s final shot eliminated <strong>${a.targetName}</strong>!</div>`;
+      return `<div class="banner reveal">\ud83c\udff9 ${esc(a.hunterName)}'s final shot eliminated <strong>${esc(a.targetName)}</strong>!</div>`;
     }
     if (a.type === 'hunter_skipped') {
-      return `<div class="banner reveal">\ud83c\udff9 ${a.hunterName} chose not to take a final shot.</div>`;
+      return `<div class="banner reveal">\ud83c\udff9 ${esc(a.hunterName)} chose not to take a final shot.</div>`;
     }
     return `<div class="banner reveal">Nobody was voted out.</div>`;
   }
@@ -162,7 +173,7 @@ function renderGameScreen(sessionId, playerId, isMod) {
       players.forEach(p => {
         const elim = p.alive === false;
         const rm = p.participationStatus === 'removed';
-        html += `<li><span>${shownName(p)}${elim ? ' \u2014 dead' : ''}${rm ? ' \u2014 removed' : ''}</span></li>`;
+        html += `<li><span>${esc(shownName(p))}${elim ? ' \u2014 dead' : ''}${rm ? ' \u2014 removed' : ''}</span></li>`;
       });
       html += `</ul>`;
       html += `<button class="logout-btn secondary-btn">Logout</button>`;
@@ -175,7 +186,7 @@ function renderGameScreen(sessionId, playerId, isMod) {
       let html = `<div class="banner">\ud83c\udff9 You've been eliminated \u2014 take your final shot!</div>`;
       html += `<h3>Choose someone to eliminate, or skip:</h3><ul class="player-list">`;
       living.forEach(p => {
-        html += `<li><button class="hunter-target-btn secondary-btn" data-uid="${p.id}">${shownName(p)}</button></li>`;
+        html += `<li><button class="hunter-target-btn secondary-btn" data-uid="${p.id}">${esc(shownName(p))}</button></li>`;
       });
       html += `</ul><button id="hunter-skip-btn" class="secondary-btn">Skip \u2014 don't shoot anyone</button>`;
       roleContent.innerHTML = html;
@@ -188,7 +199,7 @@ function renderGameScreen(sessionId, playerId, isMod) {
 
     const roleLabel = role ? role.replace(/_/g, ' ').toUpperCase() : '';
     let html = role
-      ? `<div class="role-card">You are: <strong>${roleLabel}</strong>${alive ? '' : ' (eliminated)'}</div>`
+      ? `<div class="role-card">You are: <strong>${esc(roleLabel)}</strong>${alive ? '' : ' (eliminated)'}</div>`
       : `<div class="role-card">You are the <strong>Game Master</strong> \u2014 running this round.</div>`;
 
     // ---- Top banner ----
@@ -200,30 +211,26 @@ function renderGameScreen(sessionId, playerId, isMod) {
     } else if (sessionData.announcement) {
       html += renderAnnouncement(sessionData.announcement);
     } else if (sessionData.pendingHunterShot) {
-      // Manual eliminate → no announcement; give the room a hint.
       const hunter = players.find(p => p.id === sessionData.pendingHunterShot);
       html += renderAnnouncement({ type: 'hunter_pending', name: hunter ? shownName(hunter) : 'A Hunter' });
     } else if (phase === 'night') {
-      html += `<div class="banner">\ud83c\udf19 Night${nightStep && nightStep !== 'done' ? ` \u2014 ${nightStep} acting` : ''}</div>`;
+      html += `<div class="banner">\ud83c\udf19 Night${nightStep && nightStep !== 'done' ? ` \u2014 ${esc(nightStep)} acting` : ''}</div>`;
     }
 
-    // ---- Pending Hunter line (below the announcement) ----
     if (sessionData.pendingHunterShot && !isMod) {
       html += `<p>\u23f3 Waiting for the Hunter's final shot...</p>`;
     }
 
-    // ---- Ack button ----
     const showAck = !isMod && alive && announcementNeedsAck(sessionData.announcement)
       && !showingSuspense && pendingAckKey === displayedAnnouncementKey;
     if (showAck) {
       html += `<button id="ack-announce-btn" class="primary-btn ack-btn">Tap to confirm you've seen this</button>`;
     }
 
-    // ---- Role composition (everyone) ----
     if (sessionData.roleComposition) {
       html += `<details class="composition-details"><summary>\u2139\ufe0f Role composition</summary><ul class="player-list">`;
       Object.entries(sessionData.roleComposition).forEach(([r, c]) => {
-        html += `<li><span>${r.replace(/_/g, ' ')}</span><span>${c}</span></li>`;
+        html += `<li><span>${esc(r.replace(/_/g, ' '))}</span><span>${c}</span></li>`;
       });
       html += `</ul></details>`;
     }
@@ -237,7 +244,7 @@ function renderGameScreen(sessionId, playerId, isMod) {
         const rm = p.participationStatus === 'removed';
         const statusNote = rm ? ' \u2014 removed' : (dead ? ' \u2014 dead' : '');
         html += `<li>
-          <span>${shownName(p)}: ${p.role || '\u2014'}${statusNote}</span>
+          <span>${esc(shownName(p))}: ${esc(p.role || '\u2014')}${statusNote}</span>
           ${!dead && !rm ? `<button class="eliminate-btn secondary-btn" data-uid="${p.id}">Eliminate</button>` : ''}
           ${!rm ? `<button class="remove-player-btn secondary-btn mini-btn" data-uid="${p.id}">Remove</button>` : ''}
         </li>`;
@@ -247,7 +254,7 @@ function renderGameScreen(sessionId, playerId, isMod) {
       if (sessionData.roleComposition) {
         html += `<details class="composition-details"><summary>\ud83d\udcd6 What each role does</summary><ul class="player-list">`;
         Object.keys(sessionData.roleComposition).forEach(r => {
-          html += `<li><span><strong>${r.replace(/_/g, ' ')}</strong>: ${ROLE_DESCRIPTIONS[r] || ''}</span></li>`;
+          html += `<li><span><strong>${esc(r.replace(/_/g, ' '))}</strong>: ${esc(ROLE_DESCRIPTIONS[r] || '')}</span></li>`;
         });
         html += `</ul></details>`;
       }
@@ -256,7 +263,7 @@ function renderGameScreen(sessionId, playerId, isMod) {
 
       if (sessionData.pendingHunterShot) {
         const hunter = players.find(p => p.id === sessionData.pendingHunterShot);
-        html += `<p>\u23f3 Waiting for ${hunter ? shownName(hunter) : 'the Hunter'} to take their final shot...</p>`;
+        html += `<p>\u23f3 Waiting for ${hunter ? esc(shownName(hunter)) : 'the Hunter'} to take their final shot...</p>`;
         html += `<button id="skip-hunter-btn" class="secondary-btn">Skip Hunter Shot</button>`;
       } else if (!sessionData.winner) {
         if (phase === 'night') {
@@ -269,22 +276,28 @@ function renderGameScreen(sessionId, playerId, isMod) {
             const actorLabel = submitted ? 'chosen'
               : actor ? 'waiting for their choice...'
               : 'no active player holds this role';
-            html += `<p>Active: <strong>${nightStep}</strong> \u2014 ${actorLabel}</p>`;
+            html += `<p>Active: <strong>${esc(nightStep)}</strong> \u2014 ${actorLabel}</p>`;
             html += `<button id="advance-night-btn" class="primary-btn">${submitted || !actor ? 'Next' : 'Skip / Next'}</button>`;
           }
           if (nightActionsMap.doctor) {
             const saved = players.find(p => p.id === nightActionsMap.doctor.targetId);
-            html += `<p class="hint-text">Doctor is protecting: ${saved ? shownName(saved) : '\u2014'}</p>`;
+            html += `<p class="hint-text">Doctor is protecting: ${saved ? esc(shownName(saved)) : '\u2014'}</p>`;
           }
           if (nightActionsMap.chief_werewolf) {
             const target = players.find(p => p.id === nightActionsMap.chief_werewolf.targetId);
-            html += `<p class="hint-text">Chief Werewolf is targeting: ${target ? shownName(target) : '\u2014'}</p>`;
+            html += `<p class="hint-text">Chief Werewolf is targeting: ${target ? esc(shownName(target)) : '\u2014'}</p>`;
           }
           if (nightActionsMap.witch) {
             const w = nightActionsMap.witch;
-            const label = w.action === 'save' ? 'saving the werewolves\u2019 target'
-              : w.action === 'poison' ? `poisoning ${(players.find(p => p.id === w.targetId) || {}).displayName || (players.find(p => p.id === w.targetId) || {}).username || '\u2014'}`
-              : 'doing nothing tonight';
+            let label;
+            if (w.action === 'save') {
+              label = 'saving the werewolves\u2019 target';
+            } else if (w.action === 'poison') {
+              const p = players.find(pp => pp.id === w.targetId);
+              label = `poisoning ${p ? esc(shownName(p)) : '\u2014'}`;
+            } else {
+              label = 'doing nothing tonight';
+            }
             html += `<p class="hint-text">Witch is ${label}</p>`;
           }
           html += `</div>`;
@@ -301,13 +314,9 @@ function renderGameScreen(sessionId, playerId, isMod) {
           const runoffNames = sessionData.voteEligibleTargets
             ? sessionData.voteEligibleTargets.map(id => {
                 const p = players.find(pp => pp.id === id);
-                return p ? shownName(p) : 'Unknown';
+                return p ? esc(shownName(p)) : 'Unknown';
               }).join(', ')
             : null;
-          const eligibleCount = livingActive().filter(p => {
-            const ids = sessionData.voteEligibleTargets;
-            return !ids || ids.length === 0;
-          }).length;
           html += `<p>${voteCount} of ${livingActive().length} eligible alive players voted${runoffNames ? ` \u2014 runoff: ${runoffNames}` : ''}</p>`;
           html += `<button id="reveal-voting-btn" class="primary-btn">Reveal Result</button>`;
         }
@@ -321,7 +330,7 @@ function renderGameScreen(sessionId, playerId, isMod) {
       players.forEach(p => {
         const dead = p.alive === false;
         const rm = p.participationStatus === 'removed';
-        html += `<li><span>${shownName(p)}${dead ? ' \u2014 eliminated' : ''}${rm ? ' \u2014 removed' : ''}</span></li>`;
+        html += `<li><span>${esc(shownName(p))}${dead ? ' \u2014 eliminated' : ''}${rm ? ' \u2014 removed' : ''}</span></li>`;
       });
       html += `</ul>`;
 
@@ -340,9 +349,9 @@ function renderGameScreen(sessionId, playerId, isMod) {
               html += `<p>Loading tonight's werewolf target...</p>`;
             } else if (!myNightSubmitted) {
               if (witchWolfTargetName) {
-                html += `<h3>The Werewolves' target tonight: <strong>${witchWolfTargetName}</strong></h3>`;
+                html += `<h3>The Werewolves' target tonight: <strong>${esc(witchWolfTargetName)}</strong></h3>`;
                 if (!my.healPotionUsed) {
-                  html += `<button class="witch-save-btn primary-btn">Use Heal Potion \u2014 Save ${witchWolfTargetName}</button>`;
+                  html += `<button class="witch-save-btn primary-btn">Use Heal Potion \u2014 Save ${esc(witchWolfTargetName)}</button>`;
                 }
               } else {
                 html += `<p>Waiting for the Chief Werewolf to choose a target...</p>`;
@@ -350,7 +359,7 @@ function renderGameScreen(sessionId, playerId, isMod) {
               if (!my.poisonPotionUsed) {
                 html += `<p>Or use your Poison Potion:</p><ul class="player-list">`;
                 living.filter(p => p.id !== playerId).forEach(p => {
-                  html += `<li><button class="witch-poison-btn secondary-btn" data-uid="${p.id}">Poison ${shownName(p)}</button></li>`;
+                  html += `<li><button class="witch-poison-btn secondary-btn" data-uid="${p.id}">Poison ${esc(shownName(p))}</button></li>`;
                 });
                 html += `</ul>`;
               }
@@ -359,18 +368,17 @@ function renderGameScreen(sessionId, playerId, isMod) {
               html += `<p>Your choice is locked in.</p>`;
             }
           } else if (role === 'seer' && seerCheckResult) {
-            html += `<div class="banner">${seerCheckResult.targetName} is ${seerCheckResult.isWerewolf ? 'a \ud83d\udc3a Werewolf' : 'not a Werewolf'}.</div>`;
+            html += `<div class="banner">${esc(seerCheckResult.targetName)} is ${seerCheckResult.isWerewolf ? 'a \ud83d\udc3a Werewolf' : 'not a Werewolf'}.</div>`;
           } else {
             const label = role === 'doctor' ? 'Choose someone to save:'
               : role === 'chief_werewolf' ? 'Choose someone to eliminate:'
               : 'Choose someone to check:';
             html += `<h3>${label}</h3><ul class="player-list" id="night-action-list">`;
-            // Chief cannot target self; Doctor and Seer keep self in the list.
             const candidates = role === 'chief_werewolf'
               ? living.filter(p => p.id !== playerId)
               : living;
             candidates.forEach(p => {
-              html += `<li><button class="night-target-btn secondary-btn" data-uid="${p.id}">${shownName(p)}</button></li>`;
+              html += `<li><button class="night-target-btn secondary-btn" data-uid="${p.id}">${esc(shownName(p))}</button></li>`;
             });
             html += `</ul>`;
             if (myNightSubmitted && role !== 'seer') html += `<p>Your choice is locked in.</p>`;
@@ -387,7 +395,7 @@ function renderGameScreen(sessionId, playerId, isMod) {
           .filter(p => !eligibleIds || eligibleIds.includes(p.id))
           .forEach(p => {
             const selected = myVote === p.id;
-            html += `<li><button class="vote-btn secondary-btn${selected ? ' selected' : ''}" data-uid="${p.id}">${shownName(p)}${selected ? ' \u2714\ufe0f' : ''}</button></li>`;
+            html += `<li><button class="vote-btn secondary-btn${selected ? ' selected' : ''}" data-uid="${p.id}">${esc(shownName(p))}${selected ? ' \u2714\ufe0f' : ''}</button></li>`;
           });
         html += `</ul>`;
         if (myVote) html += `<p>Your vote is in \u2014 tap another name to change it.</p>`;
@@ -577,6 +585,13 @@ function renderGameScreen(sessionId, playerId, isMod) {
       sessionData = newData;
       myDeathSeen = (sessionData.deathSeen || []).includes(playerId);
 
+      // Potion-flag queue: apply as soon as the queue is visible on the
+      // session doc — don't rely on the players listener firing again,
+      // because the two listeners' delivery order is not guaranteed.
+      if (isMod && sessionData.pendingPotionFlags && sessionData.pendingPotionFlags.length) {
+        applyPendingPotionFlags(sessionData.pendingPotionFlags);
+      }
+
       if (isGenuinelyNew && !skipSuspense) {
         showingSuspense = true;
         render();
@@ -604,7 +619,6 @@ function renderGameScreen(sessionId, playerId, isMod) {
       snapshot.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
       render();
 
-      // Move to game screen once a role appears.
       const onLobbyScreen = document.getElementById('lobby-screen') &&
         document.getElementById('lobby-screen').classList.contains('active');
       if (onLobbyScreen) {
@@ -612,6 +626,10 @@ function renderGameScreen(sessionId, playerId, isMod) {
         if (m && m.role) renderGameScreen(sessionId, playerId, false);
       }
 
+      // Belt-and-suspenders: the session listener above also checks the
+      // queue, but if a players write lands first with the queue already
+      // present, this fires the apply. The applyingPotionFlags guard
+      // prevents double-application.
       if (isMod && sessionData.pendingPotionFlags && sessionData.pendingPotionFlags.length) {
         applyPendingPotionFlags(sessionData.pendingPotionFlags);
       }
