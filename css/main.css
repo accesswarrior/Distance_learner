@@ -243,6 +243,48 @@ button:disabled {
   font-weight: bold;
 }
 
+.suspense-banner {
+  text-align: center;
+  font-size: 1.1rem;
+  animation: pulse 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  from { opacity: 0.5; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1.03); }
+}
+
+.banner.reveal {
+  animation: revealPop 0.4s ease-out;
+}
+
+@keyframes revealPop {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.composition-details {
+  background: #16213e;
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.composition-details summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.composition-details .player-list {
+  margin: 10px 0 4px;
+}
+
+.composition-details .player-list li {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+}
+
 .vote-btn.selected {
   background: #e94560;
 }
