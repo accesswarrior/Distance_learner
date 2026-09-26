@@ -148,6 +148,21 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       });
       html += `</ul>`;
 
+      // Moderator-only reference: what each role in play actually does.
+      // Never shown to players, who only ever see their own role.
+      if (sessionData.roleComposition) {
+        html += `<details class="composition-details"><summary>\ud83d\udcd6 What each role does</summary><ul class="player-list">`;
+        Object.keys(sessionData.roleComposition).forEach(role => {
+          html += `<li><span><strong>${role.replace(/_/g, ' ')}</strong>: ${ROLE_DESCRIPTIONS[role] || ''}</span></li>`;
+        });
+        html += `</ul></details>`;
+      }
+
+      // The narrator line — what to say and do right now, in plain
+      // language, computed fresh from the same state the buttons below
+      // use, so it can never fall out of sync with them.
+      html += `<div class="narrator-box"><strong>\ud83c\udf99\ufe0f </strong>${narratorLine(sessionData, nightActionsMap)}</div>`;
+
       if (sessionData.pendingHunterShot) {
         const hunter = players.find(p => p.id === sessionData.pendingHunterShot);
         html += `<p>\u23f3 Waiting for ${hunter ? shownName(hunter) : 'the Hunter'} to take their final shot...</p>`;
