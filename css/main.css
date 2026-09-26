@@ -141,6 +141,13 @@ button:disabled {
   min-height: 20px;
 }
 
+.hint-text {
+  color: #9aa5b1;
+  font-size: 0.8rem;
+  margin-top: -6px;
+  margin-bottom: 6px;
+}
+
 .join-room-form {
   display: flex;
   gap: 8px;
