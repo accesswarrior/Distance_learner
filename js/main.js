@@ -10,8 +10,6 @@ function showScreen(screenId) {
 let currentUsername = null;
 let currentDisplayName = null;
 
-// Drops someone into a room at the correct screen for its current phase —
-// lobby if it hasn't started, live game screen if it has.
 async function enterRoom(sessionId, uid, isMod) {
   const sessionDoc = await db.collection('werewolf_sessions').doc(sessionId).get();
   if (!sessionDoc.exists) {
@@ -25,17 +23,9 @@ async function enterRoom(sessionId, uid, isMod) {
     showScreen('lobby-screen');
     return;
   }
-
-  let myRole = null;
-  if (!isMod) {
-    const playerDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid).get();
-    myRole = playerDoc.exists ? (playerDoc.data().role || null) : null;
-  }
-  renderGameScreen(sessionId, uid, isMod, myRole);
+  renderGameScreen(sessionId, uid, isMod);
 }
 
-// If this account was in a room when it got logged out, drop it straight
-// back into that room instead of the room-choice screen.
 async function tryResumeSession(uid) {
   const userDoc = await db.collection('werewolf_users').doc(uid).get();
   const sessionId = userDoc.exists ? userDoc.data().currentSessionId : null;
@@ -57,11 +47,14 @@ async function tryResumeSession(uid) {
   if (!isMod) {
     const playerDoc = await sessionRef.collection('players').doc(uid).get();
     if (!playerDoc.exists) {
+      // Kicked from the lobby (doc deleted). Clear pointer.
       await db.collection('werewolf_users').doc(uid)
         .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
         .catch(() => {});
       return false;
     }
+    // If removed during an active game, the doc still exists — resume as
+    // a spectator. renderGameScreen handles the removed state.
   }
 
   await enterRoom(sessionId, uid, isMod);
@@ -84,6 +77,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!resumed) showScreen('lobby-choice-screen');
     } else {
       currentUsername = null;
+      // Clean up ALL listeners — game and lobby — before showing auth.
+      if (typeof clearGameListeners === 'function') clearGameListeners();
       if (typeof lobbyUnsubscribe === 'function' && lobbyUnsubscribe) {
         lobbyUnsubscribe();
         lobbyUnsubscribe = null;
@@ -112,10 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const code = codeInput.value.trim().toUpperCase();
     errorEl.textContent = "";
 
-    if (!code) {
-      errorEl.textContent = "Enter a room code.";
-      return;
-    }
+    if (!code) { errorEl.textContent = "Enter a room code."; return; }
 
     try {
       const uid = auth.currentUser.uid;
