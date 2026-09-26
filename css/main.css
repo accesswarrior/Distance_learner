@@ -261,6 +261,59 @@ button:active:not(:disabled) { transform: scale(0.98); }
 
 .ack-btn { animation: revealPop 0.3s ease-out; }
 
+/* ---------- Modal overlay (consequential moderator actions) ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.modal-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  max-width: 360px;
+  width: 100%;
+  text-align: center;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+}
+
+.modal-card h3 { margin-bottom: 10px; font-size: 1.15rem; }
+.modal-card p  { color: var(--text-dim); font-size: 0.95rem; margin-bottom: 20px; }
+
+.modal-actions { display: flex; gap: 10px; }
+.modal-actions button { margin: 0; flex: 1; }
+
+.danger-btn { background: var(--accent-dark); color: white; }
+.danger-btn:hover:not(:disabled) { background: #8a1a33; }
+
+/* ---------- Removed-player / spectator ---------- */
+
+.removed-banner {
+  background: var(--surface);
+  border-left: 4px solid var(--text-faint);
+  padding: 12px 15px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 15px;
+  text-align: left;
+}
+
+/* Scoped to .player-list so this beats `.player-list li button`
+   on specificity — an unscoped `.mini-btn` would be overridden. */
+.player-list li button.mini-btn {
+  width: auto;
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  border-radius: var(--radius-sm);
+}
+
 /* ---------- Reduced motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
