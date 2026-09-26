@@ -1,12 +1,12 @@
 // js/core/lobby.js
-// Waiting room rendering + the listeners that fire when a game starts.
+// Waiting room. Only in play while session.status === 'lobby'.
 
 let currentSessionId = null;
 let currentPlayerId = null;
 let isModerator = false;
 let lobbyUnsubscribe = null;
 
-const READY_THRESHOLD = 8; // minimum ready players before the moderator can start
+const READY_THRESHOLD = 8;
 
 function renderLobby(sessionId, playerId, isMod) {
   currentSessionId = sessionId;
@@ -25,13 +25,8 @@ function renderLobby(sessionId, playerId, isMod) {
     <button class="logout-btn secondary-btn">Leave / Logout</button>
   `;
 
-  if (lobbyUnsubscribe) {
-    lobbyUnsubscribe();
-    lobbyUnsubscribe = null;
-  }
+  if (lobbyUnsubscribe) { lobbyUnsubscribe(); lobbyUnsubscribe = null; }
 
-  // Delegated on the static <ul>, so we never stack listeners across
-  // re-renders.
   if (isModerator) {
     document.getElementById('player-list').addEventListener('click', (e) => {
       if (e.target.classList.contains('kick-btn')) {
@@ -43,10 +38,9 @@ function renderLobby(sessionId, playerId, isMod) {
   lobbyUnsubscribe = db.collection(`werewolf_sessions/${sessionId}/players`)
     .onSnapshot(snapshot => {
       const playerList = document.getElementById('player-list');
-      if (!playerList) return; // navigated away
+      if (!playerList) return;
 
-      // Non-moderator whose player doc is gone = kicked. Clean up the
-      // stale resume pointer and send them home.
+      // Non-moderator whose player doc is gone = kicked from the lobby.
       if (!isModerator && !snapshot.docs.some(doc => doc.id === currentPlayerId)) {
         handleRemovedFromLobby();
         return;
@@ -59,25 +53,23 @@ function renderLobby(sessionId, playerId, isMod) {
         const data = doc.data();
         const li = document.createElement('li');
         const canKick = isModerator && doc.id !== currentPlayerId;
-        const shownName = data.displayName || data.username;
-        li.innerHTML = `<span>${shownName} ${data.ready ? '✔️' : ''}</span>` +
+        const shown = data.displayName || data.username;
+        li.innerHTML = `<span>${shown} ${data.ready ? '✔️' : ''}</span>` +
           (canKick ? `<button class="kick-btn secondary-btn" data-uid="${doc.id}">Remove</button>` : '');
         playerList.appendChild(li);
         if (data.ready) readyCount++;
 
-        // Non-moderator players don't call startGame() themselves, so this
-        // is what moves them to the game screen once roles are assigned.
         const onLobbyScreen = document.getElementById('lobby-screen').classList.contains('active');
         if (!isModerator && doc.id === currentPlayerId && data.role && onLobbyScreen) {
-          renderGameScreen(currentSessionId, currentPlayerId, false, data.role);
+          renderGameScreen(currentSessionId, currentPlayerId, false);
         }
       });
 
-      const totalPlayers = snapshot.size;
+      const total = snapshot.size;
       const countDisplay = document.getElementById('player-count-display');
       if (countDisplay) {
         countDisplay.textContent =
-          `${totalPlayers} player${totalPlayers === 1 ? '' : 's'} in room (${readyCount} ready)`;
+          `${total} player${total === 1 ? '' : 's'} in room (${readyCount} ready)`;
       }
 
       const startBtn = document.getElementById('start-btn');
@@ -94,10 +86,7 @@ function renderLobby(sessionId, playerId, isMod) {
 }
 
 async function handleRemovedFromLobby() {
-  if (lobbyUnsubscribe) {
-    lobbyUnsubscribe();
-    lobbyUnsubscribe = null;
-  }
+  if (lobbyUnsubscribe) { lobbyUnsubscribe(); lobbyUnsubscribe = null; }
   await db.collection('werewolf_users').doc(currentPlayerId)
     .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
     .catch(() => {});
@@ -106,50 +95,56 @@ async function handleRemovedFromLobby() {
 }
 
 async function toggleReady() {
-  const playerRef = db.collection(`werewolf_sessions/${currentSessionId}/players`).doc(currentPlayerId);
-  const doc = await playerRef.get();
-  const current = doc.data().ready || false;
-  await playerRef.update({ ready: !current });
+  const ref = db.collection(`werewolf_sessions/${currentSessionId}/players`).doc(currentPlayerId);
+  const doc = await ref.get();
+  await ref.update({ ready: !(doc.data().ready || false) });
 }
 
 async function startGame() {
-  // Flip status first, so joinSession() closes to new players. There is
-  // still a hairline race if a join is already mid-flight the instant this
-  // write lands; fixing it fully would need a transaction.
-  await db.collection('werewolf_sessions').doc(currentSessionId).update({ status: 'started' });
+  const ok = await confirmAction({
+    title: 'Start the game?',
+    message: 'Only players who have marked themselves Ready will be dealt a role. Everyone else will be removed from the room.',
+    confirmLabel: 'Start Game'
+  });
+  if (!ok) return;
 
-  // Only players who readied up get a role. Everyone else is removed the
-  // same way a kick would remove them.
-  const playersSnapshot = await db.collection(`werewolf_sessions/${currentSessionId}/players`).get();
+  const sessionRef = db.collection('werewolf_sessions').doc(currentSessionId);
+
+  // Re-check readiness right before committing — the lobby may have changed
+  // since the button was rendered.
+  const playersSnapshot = await sessionRef.collection('players').get();
   const readyPlayers = [];
   const notReadyRefs = [];
   playersSnapshot.forEach(doc => {
-    if (doc.id === currentPlayerId) return; // defensive: stray moderator doc
-    if (doc.data().ready) {
-      readyPlayers.push({ id: doc.id, ...doc.data() });
-    } else {
-      notReadyRefs.push(doc.ref);
-    }
+    if (doc.id === currentPlayerId) return;
+    if (doc.data().ready) readyPlayers.push({ id: doc.id, ...doc.data() });
+    else notReadyRefs.push(doc.ref);
   });
 
-  const roles = assignRoles(readyPlayers.length); // rules.js
+  if (readyPlayers.length < READY_THRESHOLD) {
+    alert(`Need at least ${READY_THRESHOLD} ready players to start.`);
+    return;
+  }
 
+  const roles = assignRoles(readyPlayers.length);
+
+  // Batch: flip status, assign roles, drop non-ready, set role composition,
+  // seed pendingPotionFlags. All in one commit.
   const batch = db.batch();
+  batch.update(sessionRef, {
+    status: 'started',
+    pendingPotionFlags: []
+  });
   readyPlayers.forEach((player, index) => {
     const role = roles[index];
-    const update = { role: role, alive: true };
+    const update = { role: role, alive: true, participationStatus: 'active' };
     if (role === 'witch')  { update.healPotionUsed = false; update.poisonPotionUsed = false; }
     if (role === 'hunter') { update.hunterShotUsed = false; }
-    batch.update(
-      db.collection(`werewolf_sessions/${currentSessionId}/players`).doc(player.id),
-      update
-    );
+    batch.update(sessionRef.collection('players').doc(player.id), update);
   });
   notReadyRefs.forEach(ref => batch.delete(ref));
-  batch.set(db.collection('werewolf_sessions').doc(currentSessionId), {
-    roleComposition: roleComposition(roles)
-  }, { merge: true });
+  batch.set(sessionRef, { roleComposition: roleComposition(roles) }, { merge: true });
   await batch.commit();
 
-  renderGameScreen(currentSessionId, currentPlayerId, true, null);
+  renderGameScreen(currentSessionId, currentPlayerId, true);
 }
