@@ -263,6 +263,17 @@ button:disabled {
   to { opacity: 1; transform: scale(1); }
 }
 
+.narrator-box {
+  background: #16213e;
+  border-left: 4px solid #f5c451;
+  padding: 12px 15px;
+  border-radius: 8px;
+  margin: 12px 0;
+  text-align: left;
+  font-style: italic;
+  font-size: 0.95rem;
+}
+
 .composition-details {
   background: #16213e;
   border-radius: 10px;
