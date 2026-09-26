@@ -3,9 +3,9 @@
 // IMPORTANT: this project (access-warrior-1d789) is shared with the
 // ELTP Quiz Hub. Do NOT deploy this file as-is if the Quiz Hub already
 // has its own firestore.rules — that would overwrite its rules.
-// Instead, copy the `match` blocks below into the *same*
-// `match /databases/{database}/documents { ... }` block that already
-// contains the Quiz Hub's rules.
+// Instead, copy the `match` blocks below (functions included) into the
+// *same* `match /databases/{database}/documents { ... }` block that
+// already contains the Quiz Hub's rules.
 
 rules_version = '2';
 service cloud.firestore {
@@ -13,50 +13,94 @@ service cloud.firestore {
 
     // --- Werewolf game rules (merge these into the existing block) ---
 
+    // Helper functions, scoped so they only ever look at werewolf_ data.
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isModerator(sessionId) {
+      return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)).data.moderatorId == request.auth.uid;
+    }
+
+    function isPlayerInSession(sessionId) {
+      return exists(/databases/$(database)/documents/werewolf_sessions/$(sessionId)/players/$(request.auth.uid));
+    }
+
+    function myPlayerData(sessionId) {
+      return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)/players/$(request.auth.uid)).data;
+    }
+
+    // A "participant" is the moderator or anyone with a players/{uid} doc
+    // in this specific session — used to scope writes to people actually
+    // in that room, instead of any signed-in user app-wide.
+    function isParticipant(sessionId) {
+      return isModerator(sessionId) || isPlayerInSession(sessionId);
+    }
+
+    // True only for the one alive player currently holding `role` in this
+    // session. Used to give the Seer (and only the Seer) permission to
+    // read another player's role — that read IS the Seer's ability.
+    function amAliveRole(sessionId, role) {
+      return isPlayerInSession(sessionId)
+        && myPlayerData(sessionId).role == role
+        && myPlayerData(sessionId).alive != false;
+    }
+
     match /werewolf_usernames/{username} {
       allow read: if false; // only used server-side (client checks existence, not content)
-      allow create: if request.auth != null;
+      allow create: if signedIn();
     }
 
     match /werewolf_users/{uid} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null && request.auth.uid == uid;
-      // Only the account owner can write, and only to set/clear their own
-      // currentSessionId (used to resume a room after logout / on a new
-      // device). Still no arbitrary profile editing.
-      allow update: if request.auth != null && request.auth.uid == uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentSessionId']);
+      allow read: if signedIn();
+      allow create: if signedIn() && request.auth.uid == uid;
+      // Account owner can update their own currentSessionId (resume-a-room
+      // pointer) and displayName (the in-game name shown to other players,
+      // separate from their login username).
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentSessionId', 'displayName']);
     }
 
     match /werewolf_sessions/{sessionId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      // NOTE: currently any signed-in user can update session status.
-      // Tighten to `resource.data.moderatorId == request.auth.uid` once
-      // you're comfortable restricting "start game" to the moderator only.
-      allow update: if request.auth != null;
+      allow read: if signedIn(); // must stay open: joining-by-code happens before you're a participant
+      allow create: if signedIn();
+      // Only the moderator moves the session forward (start game, open/close
+      // voting, start/advance/end night).
+      allow update: if signedIn() && isModerator(sessionId);
 
       match /players/{playerId} {
-        allow read: if request.auth != null;
-        allow create: if request.auth != null && request.auth.uid == playerId;
-        // NOTE: currently any signed-in player can update any player doc
-        // (this is what lets the moderator write role assignments to
-        // everyone via a batch write, and eliminate/kick any player).
-        // Fine for a supervised classroom game; tighten later if this
-        // becomes unsupervised or public.
-        allow update: if request.auth != null;
-        // Lets the moderator remove a no-show from the lobby roster.
-        allow delete: if request.auth != null;
+        // Only the doc owner, the moderator, or (new) the session's alive
+        // Seer can read a given player doc. This is the fix for the role
+        // leak: the old rule let every signed-in player fetch everyone's
+        // `role` field straight into the client, console included.
+        allow read: if signedIn() && (
+          request.auth.uid == playerId ||
+          isModerator(sessionId) ||
+          amAliveRole(sessionId, 'seer')
+        );
+        allow create: if signedIn() && request.auth.uid == playerId;
+        // Only the doc owner (toggling ready) or the moderator (role
+        // assignment, elimination, kicking) ever write here — narrower
+        // than "any signed-in player," matches what the app actually does.
+        allow update: if signedIn() && (request.auth.uid == playerId || isModerator(sessionId));
+        allow delete: if signedIn() && isModerator(sessionId);
       }
 
       match /votes/{voterId} {
-        allow read: if request.auth != null;
-        // A player may only ever write their own vote...
-        allow create, update: if request.auth != null && request.auth.uid == voterId;
-        // ...but the moderator's reveal step clears everyone's vote docs
-        // between rounds, so delete stays permissive like the rest of
-        // this classroom-trust-model app.
-        allow delete: if request.auth != null;
+        allow read: if signedIn() && isParticipant(sessionId);
+        allow create, update: if signedIn() && request.auth.uid == voterId;
+        // Only the moderator's reveal step clears vote docs between rounds.
+        allow delete: if signedIn() && isModerator(sessionId);
+      }
+
+      // New: private night actions (Doctor's save, Seer's check target).
+      // Only the alive player holding that specific role may write to it,
+      // and only the moderator or that same role-holder may read it back —
+      // so a Doctor can never see who the Seer targeted, or vice versa.
+      match /nightActions/{role} {
+        allow read: if signedIn() && (isModerator(sessionId) || amAliveRole(sessionId, role));
+        allow create, update: if signedIn() && amAliveRole(sessionId, role);
+        allow delete: if signedIn() && isModerator(sessionId);
       }
     }
 

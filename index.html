@@ -21,11 +21,13 @@
         <p class="tagline">The classic social deduction game</p>
 
         <div class="auth-form">
-          <input type="text" id="username" placeholder="Username" autocomplete="off">
+          <input type="text" id="username" placeholder="Username (for login)" autocomplete="off">
+          <input type="text" id="display-name" placeholder="Display name (shown to other players)" autocomplete="off" maxlength="24">
           <input type="password" id="pin" placeholder="6-digit PIN" maxlength="6" inputmode="numeric" pattern="[0-9]*">
 
           <button id="login-btn" class="primary-btn">Login</button>
           <button id="signup-btn" class="secondary-btn">Sign Up</button>
+          <p class="hint-text">Display name is only needed to sign up — it's what everyone else sees in the game instead of your username.</p>
 
           <p id="auth-error" class="error-message"></p>
         </div>
@@ -75,6 +77,7 @@
   <script src="js/core/lobby.js"></script>
   <script src="js/games/werewolf/rules.js"></script>
   <script src="js/games/werewolf/voting.js"></script>
+  <script src="js/games/werewolf/night.js"></script>
   <script src="js/games/werewolf/ui.js"></script>
   <script src="js/main.js"></script>
 </body>
