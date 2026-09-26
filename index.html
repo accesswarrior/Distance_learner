@@ -2,28 +2,27 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Werewolf - School Game</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0f0f1a">
+  <title>Werewolf - Classroom Game</title>
   <link rel="stylesheet" href="css/main.css">
 </head>
 <body>
   <div id="app">
-    <!-- Loading screen -->
+    <!-- Loading -->
     <div class="screen active" id="loading-screen">
       <div class="spinner"></div>
       <p>Loading...</p>
     </div>
 
-    <!-- Authentication screen -->
+    <!-- Auth -->
     <div class="screen" id="auth-screen">
       <div class="auth-card">
         <h1 class="game-title">🐺 Werewolf</h1>
         <p class="tagline">The classic social deduction game</p>
 
         <div class="auth-form">
-          <input type="text" id="username" placeholder="Username" autocomplete="off">
-          <!-- Only relevant when creating an account — hidden/shown by
-               setAuthMode() in auth.js, never both modes' fields at once. -->
+          <input type="text" id="username" placeholder="Username" autocomplete="off" autocapitalize="none">
           <input type="text" id="display-name" placeholder="Display name (shown to other players)" autocomplete="off" maxlength="24" style="display:none;">
           <input type="password" id="pin" placeholder="6-digit PIN" maxlength="6" inputmode="numeric" pattern="[0-9]*">
 
@@ -38,7 +37,7 @@
       </div>
     </div>
 
-    <!-- Lobby choice screen: create a new room or join one -->
+    <!-- Room choice -->
     <div class="screen" id="lobby-choice-screen">
       <div class="auth-card">
         <h2>Welcome, <span id="welcome-username"></span></h2>
@@ -46,7 +45,7 @@
         <button id="create-room-btn" class="primary-btn">Create Room</button>
 
         <div class="join-room-form">
-          <input type="text" id="join-code-input" placeholder="Room Code" maxlength="6" autocomplete="off">
+          <input type="text" id="join-code-input" placeholder="Room Code" maxlength="6" autocomplete="off" autocapitalize="characters">
           <button id="join-room-btn" class="secondary-btn">Join Room</button>
         </div>
 
@@ -56,14 +55,12 @@
       </div>
     </div>
 
-    <!-- Lobby (waiting room) screen -->
+    <!-- Waiting room -->
     <div class="screen" id="lobby-screen">
-      <div class="lobby-container" id="lobby-content">
-        <!-- Populated dynamically by lobby.js -->
-      </div>
+      <div class="lobby-container" id="lobby-content"></div>
     </div>
 
-    <!-- Role reveal screen -->
+    <!-- Live game screen (role reveal + everything after) -->
     <div class="screen" id="role-screen">
       <div class="role-container" id="role-content"></div>
     </div>
@@ -74,16 +71,20 @@
   <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
 
-  <!-- Core scripts -->
+  <!-- Core -->
   <script src="js/core/firebaseConfig.js"></script>
   <script src="js/core/auth.js"></script>
   <script src="js/core/engine.js"></script>
   <script src="js/core/lobby.js"></script>
+
+  <!-- Werewolf -->
   <script src="js/games/werewolf/rules.js"></script>
   <script src="js/games/werewolf/voting.js"></script>
   <script src="js/games/werewolf/night.js"></script>
   <script src="js/games/werewolf/narrator.js"></script>
   <script src="js/games/werewolf/ui.js"></script>
+
+  <!-- Boot -->
   <script src="js/main.js"></script>
 </body>
 </html>
