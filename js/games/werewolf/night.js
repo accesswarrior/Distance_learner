@@ -1,35 +1,36 @@
 // js/games/werewolf/night.js
-//
 // Sequenced private night actions, coordinated by the moderator.
-// The moderator "activates" one role at a time; only the player holding
-// that role (and the moderator) can act or see anything during that step.
 //
-// The other werewolves discuss out loud (they already know each other) and
-// only the Chief Werewolf taps the agreed target into the app — so this
-// module only ever needs one werewolf-side submission per night, alongside
-// Doctor, Witch, and Seer.
+// The moderator activates one role at a time. Only the player holding that
+// role can act during that step.
 //
-// The Witch acts right after the Chief Werewolf on purpose: she's shown the
-// werewolves' chosen victim (see getWolfTarget) and decides from there,
-// which is the classic Witch ability — a specific, informed save, not a
-// blind guess like the Doctor's.
+// The other werewolves discuss out loud; only the Chief Werewolf taps the
+// agreed target into the app.
+//
+// The Witch acts right after the Chief on purpose — she's shown the
+// werewolves' chosen victim (via getWolfTarget) and decides from there.
+//
+// The Seer never writes anything but a bare `{done: true}` marker:
+// checkPlayer() reads the target's player doc directly (Firestore rules
+// grant that read to exactly one person) and the answer lives only in the
+// Seer's local screen state. Not even the moderator can see who was
+// checked or what came back.
+//
+// Potion flags (healPotionUsed, poisonPotionUsed) are game-authoritative
+// fields, so the Witch cannot self-write them. Instead she appends to
+// session.pendingPotionFlags; the moderator's client (which CAN write
+// those fields) applies them and prunes the queue. See ui.js.
 //
 // Schema additions (all under werewolf_sessions/{sessionId}):
 //   .phase       -> 'night' | 'day'
 //   .nightStep   -> null | 'doctor' | 'chief_werewolf' | 'witch' | 'seer' | 'done'
-//   /nightActions/{role}  -> { targetId, updatedAt }             (doctor, chief_werewolf, seer's own check isn't stored)
-//   /nightActions/witch   -> { action: 'save'|'poison'|'none', targetId?, updatedAt }
+//   /nightActions/{role} -> { targetId, updatedAt }   (doctor, chief_werewolf)
+//                        -> { done: true, updatedAt } (seer — no target)
+//                        -> { action, targetId?, updatedAt } (witch)
 //   cleared at the start of every night, same pattern as /votes.
-//
-// endNight() is where the night actually resolves: Doctor's save OR the
-// Witch's heal both block the werewolves' kill; the Witch's poison is
-// independent and always lands, regardless of the Doctor. The moderator
-// doesn't have to work any of that out by hand.
 
 const NIGHT_ROLE_ORDER = ['doctor', 'chief_werewolf', 'witch', 'seer'];
 
-// Moderator taps "Start Night". Clears last night's actions and opens
-// the sequence at the first role in NIGHT_ROLE_ORDER.
 async function startNight(sessionId) {
   const snap = await db.collection(`werewolf_sessions/${sessionId}/nightActions`).get();
   const batch = db.batch();
@@ -41,18 +42,16 @@ async function startNight(sessionId) {
   await batch.commit();
 }
 
-// Moderator advances to the next role, or to 'done' after the last one.
-// The moderator can always advance even if the current role hasn't
-// submitted yet (e.g. that role isn't in play this game).
 async function advanceNight(sessionId, currentStep) {
   const idx = NIGHT_ROLE_ORDER.indexOf(currentStep);
-  const next = (idx === -1 || idx === NIGHT_ROLE_ORDER.length - 1) ? 'done' : NIGHT_ROLE_ORDER[idx + 1];
+  const next = (idx === -1 || idx === NIGHT_ROLE_ORDER.length - 1)
+    ? 'done'
+    : NIGHT_ROLE_ORDER[idx + 1];
   await db.collection('werewolf_sessions').doc(sessionId).update({ nightStep: next });
 }
 
-// Moderator ends the night. This is where the kill(s) actually resolve.
-// Mirrors revealVoting()'s pattern in voting.js — read everything, decide,
-// write once.
+// Resolves the night: Doctor's save OR Witch's heal both block the
+// werewolves' kill; the Witch's poison is independent.
 async function endNight(sessionId) {
   const [doctorDoc, killDoc, witchDoc, playersSnap] = await Promise.all([
     db.collection(`werewolf_sessions/${sessionId}/nightActions`).doc('doctor').get(),
@@ -68,19 +67,14 @@ async function endNight(sessionId) {
     return p ? (p.displayName || p.username) : 'Unknown';
   };
 
-  const savedId = doctorDoc.exists ? doctorDoc.data().targetId : null;
-  const killId = killDoc.exists ? killDoc.data().targetId : null;
+  const savedId    = doctorDoc.exists ? doctorDoc.data().targetId : null;
+  const killId     = killDoc.exists   ? killDoc.data().targetId   : null;
   const witchAction = witchDoc.exists ? witchDoc.data() : { action: 'none' };
 
-  // The werewolves' target survives if the Doctor happened to save that
-  // exact person, OR the Witch used her heal potion (which is always
-  // aimed at the werewolves' target, never a free pick).
   const wolfVictimSaved = !!killId && (killId === savedId || witchAction.action === 'save');
 
   const deathIds = new Set();
   if (killId && !wolfVictimSaved) deathIds.add(killId);
-  // The Witch's poison is independent of the Doctor entirely — classic
-  // Werewolf rule, nothing can block it once she's used it.
   if (witchAction.action === 'poison' && witchAction.targetId) deathIds.add(witchAction.targetId);
 
   let announcement = { type: 'no_night_death' };
@@ -89,7 +83,7 @@ async function endNight(sessionId) {
     deathIds.forEach(id => {
       batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(id), { alive: false });
       const p = players.find(pp => pp.id === id);
-      if (p) p.alive = false; // keep local copy in sync for the checks below
+      if (p) p.alive = false;
     });
     await batch.commit();
     announcement = { type: 'night_death', names: Array.from(deathIds).map(nameOf) };
@@ -98,56 +92,71 @@ async function endNight(sessionId) {
   await db.collection('werewolf_sessions').doc(sessionId).update({
     phase: 'day',
     nightStep: 'done',
-    announcement: announcement
+    announcement: announcement,
+    deathSeen: [] // fresh list for this reveal
   });
 
-  // From voting.js — also handles Chief succession and holds off the win
-  // check if a Hunter just died and hasn't taken their shot yet.
   await checkAndApplyWinner(sessionId, players);
 }
 
-// The player currently holding the active role submits their target.
-// Firestore rules enforce that only that exact player can write this doc.
-// (Used by Doctor, Chief Werewolf, and Seer — Witch uses submitWitchAction
-// below since her options aren't a plain target list.)
+// Doctor and Chief Werewolf only. The Seer uses markSeerDone (below); the
+// Witch uses submitWitchAction.
 async function submitNightAction(sessionId, role, targetId) {
-  await db.collection(`werewolf_sessions/${sessionId}/nightActions`).doc(role).set({
-    targetId: targetId,
-    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-  });
+  try {
+    await db.collection(`werewolf_sessions/${sessionId}/nightActions`).doc(role).set({
+      targetId: targetId,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (err) {
+    console.warn('Night action rejected by security rules:', err);
+    alert('That choice could not be recorded — the night step may have already moved on.');
+  }
+}
+
+// Seer-only. Marks the Seer's step as completed WITHOUT recording a target.
+// The moderator's listener sees {done: true} but has no way to learn who was
+// checked or what the answer was.
+async function markSeerDone(sessionId) {
+  try {
+    await db.collection(`werewolf_sessions/${sessionId}/nightActions`).doc('seer').set({
+      done: true,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (err) {
+    console.warn('Could not mark Seer step done:', err);
+  }
 }
 
 // Seer-only. Reads one target's role directly — Firestore rules allow this
-// ONLY for the alive player currently holding 'seer' in this session (see
-// firestore.rules). The result is returned to the caller and shown locally;
-// it is never written back to Firestore, so it can't leak via a listener.
+// ONLY for the alive Seer in this session. The result is returned to the
+// caller and shown locally; it is never written back to Firestore.
 async function checkPlayer(sessionId, targetId) {
   const doc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(targetId).get();
-  return doc.exists ? isWerewolf(doc.data().role) : null; // isWerewolf from rules.js
+  return doc.exists ? isWerewolf(doc.data().role) : null;
 }
 
-// Witch-only. Reads who the Chief Werewolf targeted tonight — Firestore
-// rules grant this one specific cross-role read to the alive Witch only
-// (see firestore.rules). Nothing else about other roles' actions is ever
-// exposed to her.
+// Witch-only. Reads who the Chief Werewolf targeted tonight.
 async function getWolfTarget(sessionId) {
   const doc = await db.collection(`werewolf_sessions/${sessionId}/nightActions`).doc('chief_werewolf').get();
   return doc.exists ? doc.data().targetId : null;
 }
 
-// Witch-only. `action` is 'save' (heals the werewolves' chosen victim —
-// she's shown that name, it's not a free pick), 'poison' (targetId
-// required, bypasses the Doctor entirely), or 'none'. Marks the relevant
-// potion used immediately, from the Witch's own client, so her screen
-// updates without waiting for the moderator to end the night.
+// Witch-only. `action` is 'save' | 'poison' | 'none'. Writes her action doc
+// and, for save/poison, appends an entry to session.pendingPotionFlags.
+// The moderator's client applies the flag onto her player doc.
 async function submitWitchAction(sessionId, witchUid, action, targetId) {
   const write = { action: action, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
   if (action === 'poison') write.targetId = targetId;
   await db.collection(`werewolf_sessions/${sessionId}/nightActions`).doc('witch').set(write);
 
-  if (action === 'save') {
-    await db.collection(`werewolf_sessions/${sessionId}/players`).doc(witchUid).update({ healPotionUsed: true });
-  } else if (action === 'poison') {
-    await db.collection(`werewolf_sessions/${sessionId}/players`).doc(witchUid).update({ poisonPotionUsed: true });
+  if (action === 'save' || action === 'poison') {
+    const entry = {
+      witchUid: witchUid,
+      flag: action === 'save' ? 'healPotionUsed' : 'poisonPotionUsed',
+      at: Date.now()
+    };
+    db.collection('werewolf_sessions').doc(sessionId)
+      .update({ pendingPotionFlags: firebase.firestore.FieldValue.arrayUnion(entry) })
+      .catch(err => console.warn('Could not queue potion flag update:', err));
   }
 }
