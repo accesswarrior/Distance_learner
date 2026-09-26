@@ -21,15 +21,19 @@
         <p class="tagline">The classic social deduction game</p>
 
         <div class="auth-form">
-          <input type="text" id="username" placeholder="Username (for login)" autocomplete="off">
-          <input type="text" id="display-name" placeholder="Display name (shown to other players)" autocomplete="off" maxlength="24">
+          <input type="text" id="username" placeholder="Username" autocomplete="off">
+          <!-- Only relevant when creating an account — hidden/shown by
+               setAuthMode() in auth.js, never both modes' fields at once. -->
+          <input type="text" id="display-name" placeholder="Display name (shown to other players)" autocomplete="off" maxlength="24" style="display:none;">
           <input type="password" id="pin" placeholder="6-digit PIN" maxlength="6" inputmode="numeric" pattern="[0-9]*">
 
           <button id="login-btn" class="primary-btn">Login</button>
-          <button id="signup-btn" class="secondary-btn">Sign Up</button>
-          <p class="hint-text">Display name is only needed to sign up — it's what everyone else sees in the game instead of your username.</p>
+          <button id="signup-btn" class="secondary-btn" style="display:none;">Sign Up</button>
+          <p class="hint-text" id="signup-hint" style="display:none;">Display name is what everyone else sees in the game instead of your username.</p>
 
           <p id="auth-error" class="error-message"></p>
+
+          <p class="toggle-auth-mode"><a href="#" id="toggle-auth-mode-link">New here? Create an account</a></p>
         </div>
       </div>
     </div>
