@@ -1,16 +1,19 @@
 // js/games/werewolf/ui.js
+// Renders the live game screen: role reveal + everything after Start Game.
 //
-// Renders the post-lobby "game screen": role reveal, plus everything that
-// happens after Start Game — moderator's eliminate/voting/night controls,
-// the player's own voting or night-action UI, and any announcement or
-// winner banner. Stays live via Firestore listeners so roles, eliminations,
-// and night/day phase changes update in real time on every phone.
+// Two features worth calling out up front:
 //
-// Reveals (a vote result, a night death, a Hunter's shot) don't render the
-// instant Firestore delivers them — they hold behind a brief "drumroll"
-// suspense banner first (see the session listener below), so a room full
-// of phones reveals the result together instead of piecemeal as each
-// device's listener happens to fire.
+// 1. Reveal acknowledgements ("tap to confirm"). Every announcement that
+//    needs the room's attention (a night death, a vote result, a hunter's
+//    shot) is gated behind a per-player tap. session.deathSeen accumulates
+//    the uids who've acked; the moderator's primary controls only
+//    reappear when every living player is on that list. The moderator has
+//    a Force button as an escape hatch (dead phone, player stepped out).
+//
+// 2. The potion-flag queue. The Witch can't write her own potion flags
+//    (rules restrict player self-writes to `ready`), so she appends to
+//    session.pendingPotionFlags. The moderator's client — the only one
+//    allowed to write those fields — applies them and prunes the queue.
 
 let gameUnsubscribers = [];
 
@@ -19,15 +22,10 @@ function clearGameListeners() {
   gameUnsubscribers = [];
 }
 
-// The name shown to other players is always displayName (set at signup);
-// username is a private login handle and is never surfaced in-game.
 function shownName(p) {
   return p.displayName || p.username;
 }
 
-// sessionId/playerId/isMod/myRole are enough to drive the whole screen —
-// everything else (roster, alive status, votes, night actions, winner) is
-// pulled live.
 function renderGameScreen(sessionId, playerId, isMod, myRole) {
   clearGameListeners();
   showScreen('role-screen');
@@ -36,19 +34,45 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
   let players = [];
   let voteCount = 0;
   let myVote = null;
-  let nightActionsMap = {};      // moderator-only: { role: { targetId } }
-  let myNightSubmitted = false;  // did I already act during the current step
-  let seerCheckResult = null;    // local-only, never written to Firestore
+  let nightActionsMap = {};
+  let myNightSubmitted = false;
+  let seerCheckResult = null;
   let witchWolfTargetName = null;
   let witchWolfTargetFetched = false;
 
-  // Drumroll state: we don't show a new announcement the instant it
-  // arrives — we hold it behind a suspense banner for a couple seconds
-  // first. 'hunter_pending' is exempt (it IS a waiting state, no need to
-  // suspense a "please wait").
+  // Drumroll state
   let showingSuspense = false;
   let displayedAnnouncementKey = null;
   let suspenseTimer = null;
+
+  // Ack state — was I in deathSeen at the moment I first saw this announcement?
+  let pendingAckKey = null;
+  let myDeathSeen = false;
+
+  // ---------------------------------------------------------------
+  // Announcement helpers
+  // ---------------------------------------------------------------
+
+  function announcementNeedsAck(a) {
+    // 'hunter_pending' is itself a wait state; nothing for anyone to ack.
+    return !!a && a.type !== 'hunter_pending';
+  }
+
+  function allAliveHaveSeen() {
+    if (!announcementNeedsAck(sessionData.announcement)) return true;
+    const seen = sessionData.deathSeen || [];
+    return players.filter(p => p.alive !== false).every(p => seen.includes(p.id));
+  }
+
+  function acknowledgeAnnouncement() {
+    if (!pendingAckKey) return;
+    // Optimistic hide; the snapshot listener is the source of truth.
+    pendingAckKey = null;
+    render();
+    db.collection('werewolf_sessions').doc(sessionId)
+      .update({ deathSeen: firebase.firestore.FieldValue.arrayUnion(playerId) })
+      .catch(err => console.warn('Could not record acknowledgement:', err));
+  }
 
   function renderAnnouncement(a) {
     if (a.type === 'werewolf_out') {
@@ -78,19 +102,53 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
     return `<div class="banner reveal">Nobody was voted out.</div>`;
   }
 
+  // ---------------------------------------------------------------
+  // Potion-flag queue (moderator applies; rules don't let the Witch)
+  // ---------------------------------------------------------------
+
+  let applyingPotionFlags = false;
+  async function applyPendingPotionFlags(queue) {
+    if (applyingPotionFlags || !queue || !queue.length) return;
+    applyingPotionFlags = true;
+    try {
+      // Dedupe by witchUid — last intent wins.
+      const byWitch = {};
+      queue.forEach(e => { byWitch[e.witchUid] = e; });
+      const entries = Object.values(byWitch);
+
+      const batch = db.batch();
+      entries.forEach(e => {
+        batch.update(
+          db.collection(`werewolf_sessions/${sessionId}/players`).doc(e.witchUid),
+          { [e.flag]: true }
+        );
+      });
+      batch.update(db.collection('werewolf_sessions').doc(sessionId), {
+        pendingPotionFlags: firebase.firestore.FieldValue.arrayRemove(...queue)
+      });
+      await batch.commit();
+    } catch (err) {
+      console.warn('Could not apply pending potion flags:', err);
+    } finally {
+      applyingPotionFlags = false;
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Main render
+  // ---------------------------------------------------------------
+
   function render() {
     const roleContent = document.getElementById('role-content');
-    if (!roleContent) return; // navigated away
+    if (!roleContent) return;
 
     const me = players.find(p => p.id === playerId);
     const iAmAlive = !me || me.alive !== false;
     const alivePlayers = players.filter(p => p.alive !== false);
-    const phase = sessionData.phase || 'day'; // sessions started before this feature default to day
+    const phase = sessionData.phase || 'day';
     const nightStep = sessionData.nightStep || null;
 
-    // A Hunter's revenge shot takes over the whole screen for the Hunter
-    // themselves, regardless of day/night phase or suspense — it can
-    // happen any time they're eliminated, and it needs their input now.
+    // Hunter's pending shot takes over the Hunter's own screen entirely.
     if (!isMod && sessionData.pendingHunterShot === playerId) {
       let html = `<div class="banner">\ud83c\udff9 You've been eliminated \u2014 take your final shot!</div>`;
       html += `<h3>Choose someone to eliminate, or skip:</h3><ul class="player-list">`;
@@ -106,13 +164,13 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       return;
     }
 
-    // Moderators are never dealt a role, so myRole is null for them —
-    // show a distinct card instead of a player role card.
+    // Role card
     const roleLabel = myRole ? myRole.replace(/_/g, ' ').toUpperCase() : '';
     let html = myRole
       ? `<div class="role-card">You are: <strong>${roleLabel}</strong>${iAmAlive ? '' : ' (eliminated)'}</div>`
       : `<div class="role-card">You are the <strong>Game Master</strong> \u2014 running this round.</div>`;
 
+    // Top banner
     if (sessionData.winner) {
       const side = sessionData.winner === 'werewolves' ? '\ud83d\udc3a Werewolves' : '\ud83e\uddd1\u200d\ud83c\udf3e Villagers';
       html += `<div class="banner winner-banner reveal">${side} win!</div>`;
@@ -126,9 +184,17 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       html += renderAnnouncement(sessionData.announcement);
     }
 
-    // Aggregate role counts only ("5 Werewolves, 1 Seer..."), never who has
-    // what. Visible to everyone, tucked into a native collapsible so it
-    // doesn't clutter smaller games where it's obvious anyway.
+    // Player ack button — only for the alive player who hasn't acked yet.
+    const showAckButton = !isMod
+      && iAmAlive
+      && announcementNeedsAck(sessionData.announcement)
+      && !showingSuspense
+      && pendingAckKey === displayedAnnouncementKey;
+    if (showAckButton) {
+      html += `<button id="ack-announce-btn" class="primary-btn ack-btn">Tap to confirm you've seen this</button>`;
+    }
+
+    // Role composition (everyone)
     if (sessionData.roleComposition) {
       html += `<details class="composition-details"><summary>\u2139\ufe0f Role composition</summary><ul class="player-list">`;
       Object.entries(sessionData.roleComposition).forEach(([role, count]) => {
@@ -138,6 +204,8 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
     }
 
     if (isMod) {
+      // ===================== MODERATOR =====================
+
       html += `<h3>All Roles</h3><ul class="player-list">`;
       players.forEach(p => {
         const eliminated = p.alive === false;
@@ -148,8 +216,6 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       });
       html += `</ul>`;
 
-      // Moderator-only reference: what each role in play actually does.
-      // Never shown to players, who only ever see their own role.
       if (sessionData.roleComposition) {
         html += `<details class="composition-details"><summary>\ud83d\udcd6 What each role does</summary><ul class="player-list">`;
         Object.keys(sessionData.roleComposition).forEach(role => {
@@ -158,9 +224,6 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
         html += `</ul></details>`;
       }
 
-      // The narrator line — what to say and do right now, in plain
-      // language, computed fresh from the same state the buttons below
-      // use, so it can never fall out of sync with them.
       html += `<div class="narrator-box"><strong>\ud83c\udf99\ufe0f </strong>${narratorLine(sessionData, nightActionsMap)}</div>`;
 
       if (sessionData.pendingHunterShot) {
@@ -193,8 +256,18 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
           }
           html += `</div>`;
         } else if (!sessionData.votingOpen) {
-          html += `<button id="start-night-btn" class="primary-btn">Start Night</button>`;
-          html += `<button id="start-voting-btn" class="primary-btn">Start Voting</button>`;
+          // The ack gate. Primary controls only appear when every living
+          // player has acked the last announcement — or there's nothing to
+          // ack. Force button is the escape hatch.
+          if (!allAliveHaveSeen()) {
+            const seenCount = players.filter(p => p.alive !== false && (sessionData.deathSeen || []).includes(p.id)).length;
+            const aliveCount = players.filter(p => p.alive !== false).length;
+            html += `<p>\u23f3 Waiting for everyone to confirm the reveal (${seenCount} of ${aliveCount})...</p>`;
+            html += `<button id="force-ack-btn" class="secondary-btn">Everyone has seen it \u2014 continue anyway</button>`;
+          } else {
+            html += `<button id="start-night-btn" class="primary-btn">Start Night</button>`;
+            html += `<button id="start-voting-btn" class="primary-btn">Start Voting</button>`;
+          }
         } else {
           const runoffNames = sessionData.voteEligibleTargets
             ? sessionData.voteEligibleTargets.map(id => {
@@ -209,8 +282,8 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
         html += `<button id="play-again-btn" class="primary-btn">Play Again (same room)</button>`;
       }
     } else {
-      // Regular players never see roles, but they can always see who's
-      // currently in the game and who's already been eliminated.
+      // ===================== PLAYER =====================
+
       html += `<h3>Players</h3><ul class="player-list">`;
       players.forEach(p => {
         const eliminated = p.alive === false;
@@ -224,7 +297,7 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
         if (myRole === nightStep && iAmAlive) {
           if (myRole === 'witch') {
             if (!witchWolfTargetFetched) {
-              witchWolfTargetFetched = true; // guard: fetch once per step, not every render
+              witchWolfTargetFetched = true;
               getWolfTarget(sessionId).then(targetId => {
                 const target = players.find(p => p.id === targetId);
                 witchWolfTargetName = targetId ? (target ? shownName(target) : 'someone') : 'nobody (no kill chosen yet)';
@@ -284,6 +357,19 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
     html += `<button class="logout-btn secondary-btn">Logout</button>`;
     roleContent.innerHTML = html;
 
+    // Event wiring
+    const ackBtn = document.getElementById('ack-announce-btn');
+    if (ackBtn) ackBtn.addEventListener('click', acknowledgeAnnouncement);
+
+    const forceAckBtn = document.getElementById('force-ack-btn');
+    if (forceAckBtn) {
+      forceAckBtn.addEventListener('click', () => {
+        db.collection('werewolf_sessions').doc(sessionId)
+          .update({ deathSeen: players.filter(p => p.alive !== false).map(p => p.id) })
+          .catch(err => console.warn('Could not force-continue:', err));
+      });
+    }
+
     if (isMod) {
       document.querySelectorAll('.eliminate-btn').forEach(btn => {
         btn.addEventListener('click', () => eliminatePlayer(sessionId, btn.dataset.uid));
@@ -307,12 +393,17 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       document.querySelectorAll('.night-target-btn').forEach(btn => {
         btn.addEventListener('click', async () => {
           const targetId = btn.dataset.uid;
-          await submitNightAction(sessionId, myRole, targetId);
-          myNightSubmitted = true;
           if (myRole === 'seer') {
+            // Two writes: mark the step done (public, carries no info),
+            // then read the target's role (private to the Seer).
+            await markSeerDone(sessionId);
+            myNightSubmitted = true;
             const isWolf = await checkPlayer(sessionId, targetId);
             const target = players.find(p => p.id === targetId);
             seerCheckResult = { targetName: target ? shownName(target) : 'That player', isWerewolf: isWolf };
+          } else {
+            await submitNightAction(sessionId, myRole, targetId);
+            myNightSubmitted = true;
           }
           render();
         });
@@ -343,13 +434,15 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
     }
   }
 
+  // ---------------------------------------------------------------
+  // Listeners
+  // ---------------------------------------------------------------
+
   gameUnsubscribers.push(
     db.collection('werewolf_sessions').doc(sessionId).onSnapshot(doc => {
       const newData = doc.data() || {};
 
-      // Moderator hit "Play Again" — status is back to 'lobby'. Send
-      // everyone (including the moderator's own client) back to the lobby
-      // to re-ready, rather than leaving them staring at a finished round.
+      // Rematch: status is back to 'lobby'. Send everyone back.
       if (newData.status === 'lobby') {
         clearGameListeners();
         renderLobby(sessionId, playerId, isMod);
@@ -357,19 +450,17 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
         return;
       }
 
-      // A fresh night step (or leaving night phase) invalidates any
-      // in-progress local action state from the previous step.
+      // A fresh night step invalidates any local action state from the
+      // previous step, and the moderator's cached nightActionsMap.
       if (newData.nightStep !== sessionData.nightStep || newData.phase !== sessionData.phase) {
         myNightSubmitted = false;
         seerCheckResult = null;
         witchWolfTargetName = null;
         witchWolfTargetFetched = false;
+        nightActionsMap = {};
       }
 
-      // Drumroll: hold a genuinely new announcement behind a suspense
-      // banner for a moment before revealing it, so the room reveals
-      // together instead of piecemeal. 'hunter_pending' skips this — it's
-      // already itself a waiting state.
+      // Drumroll logic.
       if (suspenseTimer) { clearTimeout(suspenseTimer); suspenseTimer = null; }
       const newAnnouncement = newData.announcement || null;
       const newKey = newAnnouncement ? JSON.stringify(newAnnouncement) : null;
@@ -377,6 +468,7 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       const skipSuspense = newAnnouncement && newAnnouncement.type === 'hunter_pending';
 
       sessionData = newData;
+      myDeathSeen = (sessionData.deathSeen || []).includes(playerId);
 
       if (isGenuinelyNew && !skipSuspense) {
         showingSuspense = true;
@@ -384,12 +476,18 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
         suspenseTimer = setTimeout(() => {
           showingSuspense = false;
           displayedAnnouncementKey = newKey;
+          // Arm the ack only now — the player has just seen the reveal.
+          pendingAckKey = myDeathSeen ? null : newKey;
           suspenseTimer = null;
           render();
         }, 2200);
       } else {
         showingSuspense = false;
         displayedAnnouncementKey = newKey;
+        // Already seen, or exempt (hunter_pending), or nothing to ack.
+        pendingAckKey = (!myDeathSeen && announcementNeedsAck(newAnnouncement) && !skipSuspense)
+          ? newKey
+          : null;
         render();
       }
     })
@@ -401,31 +499,28 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       snapshot.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
       render();
 
-      // Non-moderator players don't call startGame() themselves, so this
-      // listener is what moves them to the game screen once the
-      // moderator assigns roles.
+      // Non-moderator players move to the game screen once they have a role.
       const onLobbyScreen = document.getElementById('lobby-screen') &&
         document.getElementById('lobby-screen').classList.contains('active');
       if (onLobbyScreen) {
         const mine = players.find(p => p.id === playerId);
         if (mine && mine.role) renderGameScreen(sessionId, playerId, false, mine.role);
       }
+
+      // Potion-flag queue: only the moderator applies and prunes.
+      if (isMod && sessionData.pendingPotionFlags && sessionData.pendingPotionFlags.length) {
+        applyPendingPotionFlags(sessionData.pendingPotionFlags);
+      }
     })
   );
 
   if (isMod) {
-    // Moderator only ever sees a live count of how many have voted so
-    // far — never who, and never the running tally per player.
     gameUnsubscribers.push(
       db.collection(`werewolf_sessions/${sessionId}/votes`).onSnapshot(snapshot => {
         voteCount = snapshot.size;
         render();
       })
     );
-    // Moderator can see which night role has acted (and the Doctor's save
-    // target / Witch's action, to cross-check against the werewolves'
-    // out-loud kill) but never a Seer's check target — Firestore rules
-    // don't expose that.
     gameUnsubscribers.push(
       db.collection(`werewolf_sessions/${sessionId}/nightActions`).onSnapshot(snapshot => {
         nightActionsMap = {};
