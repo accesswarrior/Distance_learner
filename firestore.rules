@@ -56,8 +56,6 @@ service cloud.firestore {
       return sessionData(sessionId).get('pendingHunterShot', '') == request.auth.uid;
     }
 
-    // Safe reads for the append-only lists. Reading a missing field would
-    // error the rule and lock out the very first ack / first potion use.
     function deathSeenList(sessionId) {
       return sessionData(sessionId).get('deathSeen', []);
     }
@@ -134,15 +132,35 @@ service cloud.firestore {
           && !('role' in request.resource.data)
           && !('alive' in request.resource.data);
 
-        // Moderator: anything (role assignment, eliminate, remove, potions,
-        // chief succession). Owner: `ready` only. Pending Hunter: alive +
-        // hunterShotUsed, only while pendingHunterShot names them.
+        // Who may update a player doc, and with which fields:
+        //
+        //  1. Moderator — anything (role assignment, elimination, removal,
+        //     potion flags, hunter flags, chief succession).
+        //
+        //  2. Doc owner — `ready` only. This is the line that keeps a
+        //     player from editing their own role / alive / potion state.
+        //
+        //  3. Pending Hunter — split into two DISTINCT writes, because
+        //     fireHunterShot performs both in a batch:
+        //       (a) the hunter's own doc: may only flip hunterShotUsed to
+        //           true. Cannot flip their own alive back to true (that
+        //           would be self-revival).
+        //       (b) another player's doc: may only set alive to false.
+        //           Cannot touch their role, participation, or anything
+        //           else.
         allow update: if signedIn() && (
           isModerator(sessionId)
           || (request.auth.uid == playerId
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready']))
           || (isPendingHunterShot(sessionId)
-              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['alive', 'hunterShotUsed']))
+              && (
+                (request.auth.uid == playerId
+                 && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hunterShotUsed'])
+                 && request.resource.data.hunterShotUsed == true)
+                || (request.auth.uid != playerId
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['alive'])
+                    && request.resource.data.alive == false)
+              ))
         );
 
         allow delete: if signedIn() && isModerator(sessionId);
