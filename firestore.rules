@@ -11,15 +11,18 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // --- Werewolf game rules (merge these into the existing block) ---
+    // ---------- Helpers ----------
 
-    // Helper functions, scoped so they only ever look at werewolf_ data.
     function signedIn() {
       return request.auth != null;
     }
 
+    function sessionData(sessionId) {
+      return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)).data;
+    }
+
     function isModerator(sessionId) {
-      return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)).data.moderatorId == request.auth.uid;
+      return sessionData(sessionId).moderatorId == request.auth.uid;
     }
 
     function isPlayerInSession(sessionId) {
@@ -30,103 +33,177 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)/players/$(request.auth.uid)).data;
     }
 
-    // A "participant" is the moderator or anyone with a players/{uid} doc
-    // in this specific session — used to scope writes to people actually
-    // in that room, instead of any signed-in user app-wide.
     function isParticipant(sessionId) {
       return isModerator(sessionId) || isPlayerInSession(sessionId);
     }
 
-    // True only for the one alive player currently holding `role` in this
-    // session. Used to give the Seer (and only the Seer) permission to
-    // read another player's role — that read IS the Seer's ability.
+    // True only for the one alive player currently holding `role`. The
+    // Seer's ability is literally "read another player's doc", so this
+    // function is the whole permission model for that role.
     function amAliveRole(sessionId, role) {
       return isPlayerInSession(sessionId)
         && myPlayerData(sessionId).role == role
         && myPlayerData(sessionId).alive != false;
     }
 
-    // True only while the session names ME as the player about to take a
-    // Hunter's revenge shot. Time-boxed: the app clears
-    // session.pendingHunterShot the instant the shot is fired (or skipped),
-    // so this permission only exists for that one brief window.
+    // Time-boxed: session.pendingHunterShot is set when a Hunter dies and
+    // cleared the instant the shot fires/skips. This only ever matches for
+    // that one brief window.
     function isPendingHunterShot(sessionId) {
-      return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)).data.pendingHunterShot == request.auth.uid;
+      return sessionData(sessionId).get('pendingHunterShot', '') == request.auth.uid;
     }
 
+    // Safe reads for the two append-only lists. Using .get(field, default)
+    // here is essential: reading a missing field errors the rule, which
+    // would otherwise lock out the very first ack / first potion use of a
+    // game.
+    function deathSeenList(sessionId) {
+      return sessionData(sessionId).get('deathSeen', []);
+    }
+
+    function potionFlagList(sessionId) {
+      return sessionData(sessionId).get('pendingPotionFlags', []);
+    }
+
+    // A vote only counts if: voting is open, target is a real player, not
+    // self, currently alive, and (during a runoff) one of the tied names.
+    function validVoteTarget(sessionId, targetId) {
+      return targetId != request.auth.uid
+        && get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)/players/$(targetId)).data.alive == true;
+    }
+
+    function voteAllowed(sessionId, data) {
+      return signedIn()
+        && isPlayerInSession(sessionId)
+        && sessionData(sessionId).get('votingOpen', false) == true
+        && 'targetId' in data
+        && validVoteTarget(sessionId, data.targetId)
+        && (!('voteEligibleTargets' in sessionData(sessionId))
+            || sessionData(sessionId).voteEligibleTargets.hasAny([data.targetId]));
+    }
+
+    // ---------- Account data ----------
+
     match /werewolf_usernames/{username} {
-      allow read: if false; // only used server-side (client checks existence, not content)
+      allow read: if false; // exists() check only — content is never read client-side
       allow create: if signedIn();
     }
 
     match /werewolf_users/{uid} {
       allow read: if signedIn();
       allow create: if signedIn() && request.auth.uid == uid;
-      // Account owner can update their own currentSessionId (resume-a-room
-      // pointer) and displayName (the in-game name shown to other players,
-      // separate from their login username).
+      // Owner can only touch currentSessionId (resume pointer) and their
+      // own displayName.
       allow update: if signedIn() && request.auth.uid == uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentSessionId', 'displayName']);
+      // No delete — accounts are permanent in this app.
     }
 
+    // ---------- Session + subcollections ----------
+
     match /werewolf_sessions/{sessionId} {
-      allow read: if signedIn(); // must stay open: joining-by-code happens before you're a participant
+      allow read: if signedIn(); // must stay open: joining-by-code happens before participation
       allow create: if signedIn();
-      // Only the moderator moves the session forward normally (start game,
-      // open/close voting, start/advance/end night). The one exception: the
-      // player currently taking a Hunter's revenge shot can clear
-      // pendingHunterShot and set the announcement once they fire — nothing
-      // else on the session doc.
+
+      // Who may update the session doc, and with which fields:
+      //   1. Moderator — anything.
+      //   2. The pending Hunter — clears pendingHunterShot, sets a new
+      //      announcement, resets deathSeen for that fresh announcement.
+      //   3. Any participant, ONLY in day phase, ONLY to grow deathSeen
+      //      (never to shrink it, never to touch any other field).
+      //   4. Any player in the session, ONLY to append one entry to
+      //      pendingPotionFlags (never to shrink it, never anything else).
       allow update: if signedIn() && (
-        isModerator(sessionId) ||
-        (isPendingHunterShot(sessionId) &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pendingHunterShot', 'announcement']))
+        isModerator(sessionId)
+        || (isPendingHunterShot(sessionId)
+            && request.resource.data.diff(resource.data)
+                 .affectedKeys().hasOnly(['pendingHunterShot', 'announcement', 'deathSeen']))
+        || (isParticipant(sessionId)
+            && resource.data.get('phase', '') == 'day'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deathSeen'])
+            && request.resource.data.deathSeen is list
+            && request.resource.data.deathSeen.hasAll(deathSeenList(sessionId))
+            && request.resource.data.deathSeen.size() >= deathSeenList(sessionId).size())
+        || (isPlayerInSession(sessionId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pendingPotionFlags'])
+            && request.resource.data.pendingPotionFlags is list
+            && request.resource.data.pendingPotionFlags.hasAll(potionFlagList(sessionId))
+            && request.resource.data.pendingPotionFlags.size() == potionFlagList(sessionId).size() + 1)
       );
 
+      // ---- players ----
+
       match /players/{playerId} {
-        // Only the doc owner, the moderator, the session's alive Seer (to
-        // check a role), or the session's alive Witch reading specifically
-        // the Chief Werewolf's nightAction doc (handled below, not here)
-        // can read a given player doc.
         allow read: if signedIn() && (
-          request.auth.uid == playerId ||
-          isModerator(sessionId) ||
-          amAliveRole(sessionId, 'seer')
+          request.auth.uid == playerId         // your own doc
+          || isModerator(sessionId)            // moderator sees everything
+          || amAliveRole(sessionId, 'seer')    // the Seer reads a target's doc — that IS the ability
         );
-        allow create: if signedIn() && request.auth.uid == playerId;
-        // Doc owner (ready toggle, Witch's own potion flags, Hunter's own
-        // shot-used flag), the moderator (role assignment, elimination,
-        // kicking), or — narrowly — the player currently taking a Hunter's
-        // revenge shot, who needs to eliminate someone who isn't themself.
+
+        // A fresh join: no role, no alive flag. The moderator's Start Game
+        // is what assigns game-authoritative fields, via the moderator
+        // update branch below.
+        allow create: if signedIn() && request.auth.uid == playerId
+          && !('role' in request.resource.data)
+          && !('alive' in request.resource.data);
+
+        // Who may update a player doc, and with which fields:
+        //   1. Moderator — anything (role assignment, elimination,
+        //      Chief succession, potion flags, hunterShotUsed, ready reset).
+        //   2. Doc owner — `ready` only. This is the line that stops a
+        //      player from editing their own role / alive / potion state.
+        //   3. Pending Hunter — only alive/hunterShotUsed, only on the
+        //      very narrow window where pendingHunterShot names them.
         allow update: if signedIn() && (
-          request.auth.uid == playerId ||
-          isModerator(sessionId) ||
-          isPendingHunterShot(sessionId)
+          isModerator(sessionId)
+          || (request.auth.uid == playerId
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready']))
+          || (isPendingHunterShot(sessionId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['alive', 'hunterShotUsed']))
         );
+
         allow delete: if signedIn() && isModerator(sessionId);
       }
+
+      // ---- votes ----
 
       match /votes/{voterId} {
-        allow read: if signedIn() && isParticipant(sessionId);
-        allow create, update: if signedIn() && request.auth.uid == voterId;
-        // Only the moderator's reveal step clears vote docs between rounds.
-        allow delete: if signedIn() && isModerator(sessionId);
+        // Secret ballot enforced at the database layer: only the voter and
+        // the moderator can read a vote doc. Ordinary players cannot
+        // enumerate the collection.
+        allow read: if signedIn() && (
+          request.auth.uid == voterId || isModerator(sessionId)
+        );
+
+        // Vote content is validated (open, valid target, runoff-eligible).
+        allow create, update: if signedIn()
+          && request.auth.uid == voterId
+          && voteAllowed(sessionId, request.resource.data);
+
+        // Voter can clear their own stray doc; moderator clears everyone's
+        // between rounds.
+        allow delete: if signedIn() && (
+          request.auth.uid == voterId || isModerator(sessionId)
+        );
       }
 
-      // Private night actions (Doctor's save, Chief Werewolf's kill, Witch's
-      // save/poison, Seer's own check isn't stored here). Only the alive
-      // player holding that specific role may write to it. Reads are
-      // normally the same restriction, PLUS one narrow exception: the alive
-      // Witch may read the Chief Werewolf's target specifically — that read
-      // IS her ability, the same way the Seer's player-doc read is hers.
-      // She still can't read the Doctor's or Seer's actions.
+      // ---- night actions ----
+
+      // Doctor, Chief Werewolf, and Witch write their action docs here.
+      // The Seer writes ONLY a `{done: true}` marker — never a target —
+      // because checkPlayer() (in night.js) reads the target's player doc
+      // directly and never stores the result.
       match /nightActions/{role} {
         allow read: if signedIn() && (
-          isModerator(sessionId) ||
-          amAliveRole(sessionId, role) ||
-          (role == 'chief_werewolf' && amAliveRole(sessionId, 'witch'))
+          isModerator(sessionId)
+          || amAliveRole(sessionId, role)
+          // Narrow cross-role read: the alive Witch may read the Chief
+          // Werewolf's doc — that read IS her ability.
+          || (role == 'chief_werewolf' && amAliveRole(sessionId, 'witch'))
         );
+
         allow create, update: if signedIn() && amAliveRole(sessionId, role);
+
         allow delete: if signedIn() && isModerator(sessionId);
       }
     }
