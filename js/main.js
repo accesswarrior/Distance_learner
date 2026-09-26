@@ -1,4 +1,5 @@
 // js/main.js
+// Boot + top-level routing.
 
 function showScreen(screenId) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -9,10 +10,8 @@ function showScreen(screenId) {
 let currentUsername = null;
 let currentDisplayName = null;
 
-// Sends someone into a room at the correct screen for its current phase —
-// lobby if it hasn't started, the live game screen (with their existing
-// role, if any) if it has. Used both for a fresh "Join Room" and for
-// resuming a session after login.
+// Drops someone into a room at the correct screen for its current phase —
+// lobby if it hasn't started, live game screen if it has.
 async function enterRoom(sessionId, uid, isMod) {
   const sessionDoc = await db.collection('werewolf_sessions').doc(sessionId).get();
   if (!sessionDoc.exists) {
@@ -32,12 +31,11 @@ async function enterRoom(sessionId, uid, isMod) {
     const playerDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid).get();
     myRole = playerDoc.exists ? (playerDoc.data().role || null) : null;
   }
-  renderGameScreen(sessionId, uid, isMod, myRole); // shows the game screen itself
+  renderGameScreen(sessionId, uid, isMod, myRole);
 }
 
-// If this account was in a room when it got logged out (or logs in from a
-// different device), drop it straight back into that room instead of the
-// room-choice screen. Returns true if a resume happened.
+// If this account was in a room when it got logged out, drop it straight
+// back into that room instead of the room-choice screen.
 async function tryResumeSession(uid) {
   const userDoc = await db.collection('werewolf_users').doc(uid).get();
   const sessionId = userDoc.exists ? userDoc.data().currentSessionId : null;
@@ -46,7 +44,6 @@ async function tryResumeSession(uid) {
   const sessionRef = db.collection('werewolf_sessions').doc(sessionId);
   const sessionDoc = await sessionRef.get();
 
-  // Room no longer exists — clear the stale pointer and fall back normally.
   if (!sessionDoc.exists) {
     await db.collection('werewolf_users').doc(uid)
       .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
@@ -60,7 +57,6 @@ async function tryResumeSession(uid) {
   if (!isMod) {
     const playerDoc = await sessionRef.collection('players').doc(uid).get();
     if (!playerDoc.exists) {
-      // Was removed from the lobby (or never actually a player) — stale pointer.
       await db.collection('werewolf_users').doc(uid)
         .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
         .catch(() => {});
@@ -79,22 +75,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if (user) {
       const userDoc = await db.collection('werewolf_users').doc(user.uid).get();
       currentUsername = userDoc.exists ? userDoc.data().username : user.email.split('@')[0];
-      currentDisplayName = userDoc.exists ? (userDoc.data().displayName || currentUsername) : currentUsername;
+      currentDisplayName = userDoc.exists
+        ? (userDoc.data().displayName || currentUsername)
+        : currentUsername;
       document.getElementById('welcome-username').textContent = currentDisplayName;
 
       const resumed = await tryResumeSession(user.uid);
-      if (!resumed) {
-        showScreen('lobby-choice-screen');
-      }
+      if (!resumed) showScreen('lobby-choice-screen');
     } else {
       currentUsername = null;
-
-      // Clean up any live Firestore listener from a previous lobby session.
       if (typeof lobbyUnsubscribe === 'function' && lobbyUnsubscribe) {
         lobbyUnsubscribe();
         lobbyUnsubscribe = null;
       }
-
       showScreen('auth-screen');
     }
   });
@@ -127,7 +120,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const uid = auth.currentUser.uid;
       const isMod = await joinSession(code, uid, currentUsername, currentDisplayName);
-      await enterRoom(code, uid, isMod); // routes to lobby OR live game screen
+      await enterRoom(code, uid, isMod);
     } catch (error) {
       console.error("Join room error:", error);
       errorEl.textContent = error.message || "Couldn't join room.";
