@@ -12,6 +12,22 @@
 //
 // Removed ≠ dead. A disconnected player is neither. Only the moderator's
 // explicit "Remove from game" action moves a player to 'removed'.
+//
+// esc() lives here (loaded before ui.js) because both this file's
+// confirmAction() and every interpolation in ui.js need it. It escapes the
+// five characters that can break out of element content or attribute
+// values. Escaping is done at each interpolation site, NOT inside
+// shownName(), so a raw value stored in state is never pre-escaped and
+// can't be double-escaped if it's later compared or re-rendered.
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function generateRoomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -24,18 +40,19 @@ function generateRoomCode() {
 
 // Promise-based confirmation modal. Used by the moderator UI before any
 // consequential action. The rules and state guards are the real defense;
-// this is the "did you mean to?" layer.
+// this is the "did you mean to?" layer. Title and message are escaped
+// because callers sometimes build them from user-supplied display names.
 function confirmAction({ title, message, confirmLabel, danger }) {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
       <div class="modal-card">
-        <h3>${title}</h3>
-        <p>${message}</p>
+        <h3>${esc(title)}</h3>
+        <p>${esc(message)}</p>
         <div class="modal-actions">
           <button class="secondary-btn modal-cancel">Cancel</button>
-          <button class="${danger ? 'danger-btn' : 'primary-btn'} modal-confirm">${confirmLabel}</button>
+          <button class="${danger ? 'danger-btn' : 'primary-btn'} modal-confirm">${esc(confirmLabel)}</button>
         </div>
       </div>
     `;
@@ -85,10 +102,6 @@ async function joinSession(code, uid, username, displayName) {
     const playerRef = sessionRef.collection('players').doc(uid);
     const existingPlayerDoc = await playerRef.get();
 
-    // A brand-new player can only join while the room is in the lobby.
-    // Someone already in this game (returning after disconnect) can always
-    // get back in — their existing doc carries their state, including
-    // participationStatus, which the game screen respects.
     if (sessionData.status !== 'lobby' && !existingPlayerDoc.exists) {
       throw new Error("This game has already started.");
     }
@@ -108,8 +121,7 @@ async function joinSession(code, uid, username, displayName) {
 }
 
 // Moderator: remove an active-game player. Preserves their doc (role,
-// history) but excludes them from all future game calculations. Distinct
-// from kickPlayer (lobby.js), which deletes.
+// history) but excludes them from all future game calculations.
 async function removePlayerFromGame(sessionId, uid) {
   await db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid).update({
     participationStatus: 'removed',
@@ -118,8 +130,8 @@ async function removePlayerFromGame(sessionId, uid) {
 }
 
 // Moderator: Play Again. Players removed during the last round are dropped
-// from the roster entirely (they chose not to continue). Everyone else is
-// reset to a fresh lobby state and must re-ready.
+// from the roster entirely. Everyone else is reset to a fresh lobby state
+// and must re-ready.
 async function resetSessionForRematch(sessionId) {
   const [playersSnap, votesSnap, nightSnap] = await Promise.all([
     db.collection(`werewolf_sessions/${sessionId}/players`).get(),
