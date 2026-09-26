@@ -51,16 +51,12 @@ function pickChiefSuccessor(players) {
 
 function findPendingHunter(players) {
   const hunter = players.find(p =>
-    isLivingActive({ ...p, alive: false })  // isActive AND role hunt — no, alive:false on purpose
-  );
-  // simpler: explicit filter
-  const h = players.find(p =>
     p.role === 'hunter'
     && p.alive === false
     && !p.hunterShotUsed
     && isActive(p)
   );
-  return h ? h.id : null;
+  return hunter ? hunter.id : null;
 }
 
 function checkWinCondition(players) {
