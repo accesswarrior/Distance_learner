@@ -7,6 +7,7 @@ function showScreen(screenId) {
 }
 
 let currentUsername = null;
+let currentDisplayName = null;
 
 // Sends someone into a room at the correct screen for its current phase —
 // lobby if it hasn't started, the live game screen (with their existing
@@ -78,7 +79,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (user) {
       const userDoc = await db.collection('werewolf_users').doc(user.uid).get();
       currentUsername = userDoc.exists ? userDoc.data().username : user.email.split('@')[0];
-      document.getElementById('welcome-username').textContent = currentUsername;
+      currentDisplayName = userDoc.exists ? (userDoc.data().displayName || currentUsername) : currentUsername;
+      document.getElementById('welcome-username').textContent = currentDisplayName;
 
       const resumed = await tryResumeSession(user.uid);
       if (!resumed) {
@@ -102,7 +104,7 @@ document.addEventListener('DOMContentLoaded', () => {
     errorEl.textContent = "";
     try {
       const uid = auth.currentUser.uid;
-      const code = await createSession(uid, currentUsername);
+      const code = await createSession(uid, currentUsername, currentDisplayName);
       renderLobby(code, uid, true);
       showScreen('lobby-screen');
     } catch (error) {
@@ -124,7 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try {
       const uid = auth.currentUser.uid;
-      const isMod = await joinSession(code, uid, currentUsername);
+      const isMod = await joinSession(code, uid, currentUsername, currentDisplayName);
       await enterRoom(code, uid, isMod); // routes to lobby OR live game screen
     } catch (error) {
       console.error("Join room error:", error);
