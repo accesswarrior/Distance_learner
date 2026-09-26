@@ -13,12 +13,14 @@ service cloud.firestore {
 
     // ---------- Helpers ----------
 
-    function signedIn() {
-      return request.auth != null;
-    }
+    function signedIn() { return request.auth != null; }
 
     function sessionData(sessionId) {
       return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)).data;
+    }
+
+    function playerDoc(sessionId, uid) {
+      return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)/players/$(uid)).data;
     }
 
     function isModerator(sessionId) {
@@ -30,33 +32,32 @@ service cloud.firestore {
     }
 
     function myPlayerData(sessionId) {
-      return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)/players/$(request.auth.uid)).data;
+      return playerDoc(sessionId, request.auth.uid);
+    }
+
+    // Active = has a player doc AND hasn't been marked removed.
+    // Missing participationStatus is treated as 'active' for compat.
+    function isActiveParticipant(sessionId) {
+      return isPlayerInSession(sessionId)
+        && myPlayerData(sessionId).get('participationStatus', 'active') != 'removed';
     }
 
     function isParticipant(sessionId) {
       return isModerator(sessionId) || isPlayerInSession(sessionId);
     }
 
-    // True only for the one alive player currently holding `role`. The
-    // Seer's ability is literally "read another player's doc", so this
-    // function is the whole permission model for that role.
     function amAliveRole(sessionId, role) {
-      return isPlayerInSession(sessionId)
+      return isActiveParticipant(sessionId)
         && myPlayerData(sessionId).role == role
         && myPlayerData(sessionId).alive != false;
     }
 
-    // Time-boxed: session.pendingHunterShot is set when a Hunter dies and
-    // cleared the instant the shot fires/skips. This only ever matches for
-    // that one brief window.
     function isPendingHunterShot(sessionId) {
       return sessionData(sessionId).get('pendingHunterShot', '') == request.auth.uid;
     }
 
-    // Safe reads for the two append-only lists. Using .get(field, default)
-    // here is essential: reading a missing field errors the rule, which
-    // would otherwise lock out the very first ack / first potion use of a
-    // game.
+    // Safe reads for the append-only lists. Reading a missing field would
+    // error the rule and lock out the very first ack / first potion use.
     function deathSeenList(sessionId) {
       return sessionData(sessionId).get('deathSeen', []);
     }
@@ -65,16 +66,16 @@ service cloud.firestore {
       return sessionData(sessionId).get('pendingPotionFlags', []);
     }
 
-    // A vote only counts if: voting is open, target is a real player, not
-    // self, currently alive, and (during a runoff) one of the tied names.
     function validVoteTarget(sessionId, targetId) {
       return targetId != request.auth.uid
-        && get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)/players/$(targetId)).data.alive == true;
+        && playerDoc(sessionId, targetId).get('participationStatus', 'active') != 'removed'
+        && playerDoc(sessionId, targetId).get('alive', false) == true;
     }
 
     function voteAllowed(sessionId, data) {
       return signedIn()
-        && isPlayerInSession(sessionId)
+        && isActiveParticipant(sessionId)
+        && myPlayerData(sessionId).get('alive', false) == true
         && sessionData(sessionId).get('votingOpen', false) == true
         && 'targetId' in data
         && validVoteTarget(sessionId, data.targetId)
@@ -85,46 +86,35 @@ service cloud.firestore {
     // ---------- Account data ----------
 
     match /werewolf_usernames/{username} {
-      allow read: if false; // exists() check only — content is never read client-side
+      allow read: if false;
       allow create: if signedIn();
     }
 
     match /werewolf_users/{uid} {
       allow read: if signedIn();
       allow create: if signedIn() && request.auth.uid == uid;
-      // Owner can only touch currentSessionId (resume pointer) and their
-      // own displayName.
       allow update: if signedIn() && request.auth.uid == uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentSessionId', 'displayName']);
-      // No delete — accounts are permanent in this app.
     }
 
-    // ---------- Session + subcollections ----------
+    // ---------- Sessions ----------
 
     match /werewolf_sessions/{sessionId} {
-      allow read: if signedIn(); // must stay open: joining-by-code happens before participation
+      allow read: if signedIn();
       allow create: if signedIn();
 
-      // Who may update the session doc, and with which fields:
-      //   1. Moderator — anything.
-      //   2. The pending Hunter — clears pendingHunterShot, sets a new
-      //      announcement, resets deathSeen for that fresh announcement.
-      //   3. Any participant, ONLY in day phase, ONLY to grow deathSeen
-      //      (never to shrink it, never to touch any other field).
-      //   4. Any player in the session, ONLY to append one entry to
-      //      pendingPotionFlags (never to shrink it, never anything else).
       allow update: if signedIn() && (
         isModerator(sessionId)
         || (isPendingHunterShot(sessionId)
             && request.resource.data.diff(resource.data)
                  .affectedKeys().hasOnly(['pendingHunterShot', 'announcement', 'deathSeen']))
-        || (isParticipant(sessionId)
+        || (isActiveParticipant(sessionId)
             && resource.data.get('phase', '') == 'day'
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deathSeen'])
             && request.resource.data.deathSeen is list
             && request.resource.data.deathSeen.hasAll(deathSeenList(sessionId))
             && request.resource.data.deathSeen.size() >= deathSeenList(sessionId).size())
-        || (isPlayerInSession(sessionId)
+        || (amAliveRole(sessionId, 'witch')
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pendingPotionFlags'])
             && request.resource.data.pendingPotionFlags is list
             && request.resource.data.pendingPotionFlags.hasAll(potionFlagList(sessionId))
@@ -135,25 +125,18 @@ service cloud.firestore {
 
       match /players/{playerId} {
         allow read: if signedIn() && (
-          request.auth.uid == playerId         // your own doc
-          || isModerator(sessionId)            // moderator sees everything
-          || amAliveRole(sessionId, 'seer')    // the Seer reads a target's doc — that IS the ability
+          request.auth.uid == playerId
+          || isModerator(sessionId)
+          || amAliveRole(sessionId, 'seer')
         );
 
-        // A fresh join: no role, no alive flag. The moderator's Start Game
-        // is what assigns game-authoritative fields, via the moderator
-        // update branch below.
         allow create: if signedIn() && request.auth.uid == playerId
           && !('role' in request.resource.data)
           && !('alive' in request.resource.data);
 
-        // Who may update a player doc, and with which fields:
-        //   1. Moderator — anything (role assignment, elimination,
-        //      Chief succession, potion flags, hunterShotUsed, ready reset).
-        //   2. Doc owner — `ready` only. This is the line that stops a
-        //      player from editing their own role / alive / potion state.
-        //   3. Pending Hunter — only alive/hunterShotUsed, only on the
-        //      very narrow window where pendingHunterShot names them.
+        // Moderator: anything (role assignment, eliminate, remove, potions,
+        // chief succession). Owner: `ready` only. Pending Hunter: alive +
+        // hunterShotUsed, only while pendingHunterShot names them.
         allow update: if signedIn() && (
           isModerator(sessionId)
           || (request.auth.uid == playerId
@@ -168,20 +151,12 @@ service cloud.firestore {
       // ---- votes ----
 
       match /votes/{voterId} {
-        // Secret ballot enforced at the database layer: only the voter and
-        // the moderator can read a vote doc. Ordinary players cannot
-        // enumerate the collection.
         allow read: if signedIn() && (
           request.auth.uid == voterId || isModerator(sessionId)
         );
-
-        // Vote content is validated (open, valid target, runoff-eligible).
         allow create, update: if signedIn()
           && request.auth.uid == voterId
           && voteAllowed(sessionId, request.resource.data);
-
-        // Voter can clear their own stray doc; moderator clears everyone's
-        // between rounds.
         allow delete: if signedIn() && (
           request.auth.uid == voterId || isModerator(sessionId)
         );
@@ -189,21 +164,13 @@ service cloud.firestore {
 
       // ---- night actions ----
 
-      // Doctor, Chief Werewolf, and Witch write their action docs here.
-      // The Seer writes ONLY a `{done: true}` marker — never a target —
-      // because checkPlayer() (in night.js) reads the target's player doc
-      // directly and never stores the result.
       match /nightActions/{role} {
         allow read: if signedIn() && (
           isModerator(sessionId)
           || amAliveRole(sessionId, role)
-          // Narrow cross-role read: the alive Witch may read the Chief
-          // Werewolf's doc — that read IS her ability.
           || (role == 'chief_werewolf' && amAliveRole(sessionId, 'witch'))
         );
-
         allow create, update: if signedIn() && amAliveRole(sessionId, role);
-
         allow delete: if signedIn() && isModerator(sessionId);
       }
     }
