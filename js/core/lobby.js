@@ -35,13 +35,22 @@ function renderLobby(sessionId, playerId, isMod) {
     });
   }
 
+  // Guard against a spurious "you were removed" if the very first snapshot
+  // arrives before our own join write has echoed locally — we only treat a
+  // missing self as a genuine removal AFTER we've seen ourselves at least
+  // once. The moderator has no player doc, so this branch never fires for
+  // them.
+  let sawMyself = false;
+
   lobbyUnsubscribe = db.collection(`werewolf_sessions/${sessionId}/players`)
     .onSnapshot(snapshot => {
       const playerList = document.getElementById('player-list');
       if (!playerList) return;
 
-      // Non-moderator whose player doc is gone = kicked from the lobby.
-      if (!isModerator && !snapshot.docs.some(doc => doc.id === currentPlayerId)) {
+      const selfPresent = snapshot.docs.some(doc => doc.id === currentPlayerId);
+      if (selfPresent) sawMyself = true;
+
+      if (!isModerator && sawMyself && !selfPresent) {
         handleRemovedFromLobby();
         return;
       }
@@ -54,7 +63,7 @@ function renderLobby(sessionId, playerId, isMod) {
         const li = document.createElement('li');
         const canKick = isModerator && doc.id !== currentPlayerId;
         const shown = data.displayName || data.username;
-        li.innerHTML = `<span>${shown} ${data.ready ? '✔️' : ''}</span>` +
+        li.innerHTML = `<span>${esc(shown)} ${data.ready ? '✔️' : ''}</span>` +
           (canKick ? `<button class="kick-btn secondary-btn" data-uid="${doc.id}">Remove</button>` : '');
         playerList.appendChild(li);
         if (data.ready) readyCount++;
@@ -110,8 +119,6 @@ async function startGame() {
 
   const sessionRef = db.collection('werewolf_sessions').doc(currentSessionId);
 
-  // Re-check readiness right before committing — the lobby may have changed
-  // since the button was rendered.
   const playersSnapshot = await sessionRef.collection('players').get();
   const readyPlayers = [];
   const notReadyRefs = [];
@@ -128,8 +135,6 @@ async function startGame() {
 
   const roles = assignRoles(readyPlayers.length);
 
-  // Batch: flip status, assign roles, drop non-ready, set role composition,
-  // seed pendingPotionFlags. All in one commit.
   const batch = db.batch();
   batch.update(sessionRef, {
     status: 'started',
