@@ -119,7 +119,14 @@ async function resetSessionForRematch(sessionId) {
   ]);
 
   const batch = db.batch();
-  playersSnap.forEach(doc => batch.update(doc.ref, { role: null, alive: true, ready: false }));
+  playersSnap.forEach(doc => batch.update(doc.ref, {
+    role: null,
+    alive: true,
+    ready: false,
+    healPotionUsed: firebase.firestore.FieldValue.delete(),
+    poisonPotionUsed: firebase.firestore.FieldValue.delete(),
+    hunterShotUsed: firebase.firestore.FieldValue.delete()
+  }));
   votesSnap.forEach(doc => batch.delete(doc.ref));
   nightSnap.forEach(doc => batch.delete(doc.ref));
   batch.set(db.collection('werewolf_sessions').doc(sessionId), {
@@ -129,7 +136,9 @@ async function resetSessionForRematch(sessionId) {
     votingOpen: false,
     voteEligibleTargets: firebase.firestore.FieldValue.delete(),
     announcement: null,
-    winner: firebase.firestore.FieldValue.delete()
+    winner: firebase.firestore.FieldValue.delete(),
+    pendingHunterShot: firebase.firestore.FieldValue.delete(),
+    roleComposition: firebase.firestore.FieldValue.delete()
   }, { merge: true });
   await batch.commit();
 }

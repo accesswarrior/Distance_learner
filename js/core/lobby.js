@@ -152,12 +152,22 @@ async function startGame() {
 
   const batch = db.batch();
   readyPlayers.forEach((player, index) => {
+    const role = roles[index];
+    const update = { role: role, alive: true };
+    // One-time-use tracking for roles that need it, reset fresh every game.
+    if (role === 'witch') { update.healPotionUsed = false; update.poisonPotionUsed = false; }
+    if (role === 'hunter') { update.hunterShotUsed = false; }
     batch.update(
       db.collection(`werewolf_sessions/${currentSessionId}/players`).doc(player.id),
-      { role: roles[index], alive: true }
+      update
     );
   });
   notReadyRefs.forEach(ref => batch.delete(ref));
+  // Aggregate role counts only (e.g. "5 Werewolves, 1 Seer...") — every
+  // player can see this, just never who has which role. See rules.js.
+  batch.set(db.collection('werewolf_sessions').doc(currentSessionId), {
+    roleComposition: roleComposition(roles)
+  }, { merge: true });
   await batch.commit();
 
   // The moderator jumps to the game screen immediately, with the full role list

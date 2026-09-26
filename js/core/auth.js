@@ -12,6 +12,31 @@ function usernameToEmail(username) {
 // surface as a confusing Firebase error instead of a clear message here.
 const USERNAME_PATTERN = /^[a-z0-9_-]{3,20}$/;
 
+// The auth screen is one shared form for both login and signup, but
+// Display Name only ever matters when creating an account — a returning
+// player already has one. This toggles which fields/buttons are visible
+// so login stays a plain "username + PIN" form, exactly as before.
+let authMode = 'login'; // 'login' | 'signup'
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const isSignup = mode === 'signup';
+  document.getElementById('display-name').style.display = isSignup ? 'block' : 'none';
+  document.getElementById('signup-hint').style.display = isSignup ? 'block' : 'none';
+  document.getElementById('login-btn').style.display = isSignup ? 'none' : 'block';
+  document.getElementById('signup-btn').style.display = isSignup ? 'block' : 'none';
+  document.getElementById('toggle-auth-mode-link').textContent =
+    isSignup ? 'Already have an account? Log in' : "New here? Create an account";
+  document.getElementById('auth-error').textContent = '';
+}
+
+document.getElementById('toggle-auth-mode-link').addEventListener('click', (e) => {
+  e.preventDefault();
+  setAuthMode(authMode === 'login' ? 'signup' : 'login');
+});
+
+setAuthMode('login'); // starting state: plain login, matches how it looked before
+
 document.getElementById('signup-btn').addEventListener('click', async () => {
   const username = document.getElementById('username').value.trim().toLowerCase();
   const displayName = document.getElementById('display-name').value.trim();
