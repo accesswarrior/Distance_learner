@@ -148,6 +148,20 @@ button:disabled {
   margin-bottom: 6px;
 }
 
+.toggle-auth-mode {
+  margin-top: 12px;
+  font-size: 0.85rem;
+}
+
+.toggle-auth-mode a {
+  color: #e94560;
+  text-decoration: none;
+}
+
+.toggle-auth-mode a:hover {
+  text-decoration: underline;
+}
+
 .join-room-form {
   display: flex;
   gap: 8px;
