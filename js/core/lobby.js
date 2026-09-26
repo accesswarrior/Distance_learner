@@ -67,7 +67,8 @@ function renderLobby(sessionId, playerId, isMod) {
         const data = doc.data();
         const li = document.createElement('li');
         const canKick = isModerator && doc.id !== currentPlayerId;
-        li.innerHTML = `<span>${data.username} ${data.ready ? '✔️' : ''}</span>` +
+        const shownName = data.displayName || data.username;
+        li.innerHTML = `<span>${shownName} ${data.ready ? '✔️' : ''}</span>` +
           (canKick ? `<button class="kick-btn secondary-btn" data-uid="${doc.id}">Remove</button>` : '');
         playerList.appendChild(li);
         if (data.ready) readyCount++;
@@ -120,6 +121,15 @@ async function toggleReady() {
 }
 
 async function startGame() {
+  // Flip status to 'started' FIRST, before reading the roster below.
+  // joinSession() refuses to add a new player once status isn't 'lobby', so
+  // this closes the window where someone could join between "read the
+  // roster" and "assign roles" and end up with a players/{uid} doc that
+  // never gets a role. (There's still a hairline-thin race if a join is
+  // already mid-flight the instant this write lands — fixing that fully
+  // would need a transaction, which isn't worth the complexity here.)
+  await db.collection('werewolf_sessions').doc(currentSessionId).update({ status: 'started' });
+
   // Defensive: strip out any stray moderator doc left behind by rooms
   // created before this fix, so an old room can't hand the moderator a role.
   const playersSnapshot = await db.collection(`werewolf_sessions/${currentSessionId}/players`).get();
@@ -140,7 +150,6 @@ async function startGame() {
     );
   });
   await batch.commit();
-  await db.collection('werewolf_sessions').doc(currentSessionId).update({ status: 'started' });
 
   // The moderator jumps to the game screen immediately, with the full role list
   // and the eliminate/voting controls. The moderator never has a players/{uid}

@@ -7,13 +7,27 @@ function usernameToEmail(username) {
   return username + "@werewolf.local";
 }
 
+// Letters, numbers, underscore, hyphen only. Blocks spaces, "@", and other
+// characters that would otherwise produce a malformed synthetic email and
+// surface as a confusing Firebase error instead of a clear message here.
+const USERNAME_PATTERN = /^[a-z0-9_-]{3,20}$/;
+
 document.getElementById('signup-btn').addEventListener('click', async () => {
   const username = document.getElementById('username').value.trim().toLowerCase();
+  const displayName = document.getElementById('display-name').value.trim();
   const pin = document.getElementById('pin').value.trim();
   const errorEl = document.getElementById('auth-error');
 
   if (!username || !pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) {
     errorEl.textContent = "Username and 6-digit PIN are required.";
+    return;
+  }
+  if (!USERNAME_PATTERN.test(username)) {
+    errorEl.textContent = "Username must be 3-20 characters: letters, numbers, _ or - only.";
+    return;
+  }
+  if (!displayName) {
+    errorEl.textContent = "Enter a display name — it's what other players see in the game.";
     return;
   }
 
@@ -29,9 +43,12 @@ document.getElementById('signup-btn').addEventListener('click', async () => {
 
     // These writes happen AFTER auth succeeds, so request.auth is now set
     // and matches the rules (create-only, uid must match the signed-in user).
+    // `username` is the private login handle; `displayName` is the name
+    // shown to other players in-game (they can be wildly different).
     await db.collection('werewolf_usernames').doc(username).set({ uid });
     await db.collection('werewolf_users').doc(uid).set({
       username: username,
+      displayName: displayName,
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
 

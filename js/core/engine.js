@@ -2,9 +2,13 @@
 // Session lifecycle: creating and joining Werewolf rooms.
 //
 // Collection layout (all namespaced under "werewolf_"):
-//   werewolf_sessions/{sessionId}                -> { moderatorId, status, createdAt }
-//   werewolf_sessions/{sessionId}/players/{uid}  -> { username, ready, role, alive }
-//   werewolf_users/{uid}                         -> { username, createdAt, currentSessionId }
+//   werewolf_sessions/{sessionId}                -> { moderatorId, status, createdAt, phase, nightStep }
+//   werewolf_sessions/{sessionId}/players/{uid}  -> { username, displayName, ready, role, alive }
+//   werewolf_users/{uid}                         -> { username, displayName, createdAt, currentSessionId }
+//
+// `username` is the private login handle (never shown to other players).
+// `displayName` is what everyone actually sees in the lobby/game screens —
+// set once at signup, since usernames are often unrecognizable nicknames.
 //
 // NOTE: the moderator (room creator) is intentionally NOT written into the
 // players subcollection. The moderator runs the round and is never dealt a
@@ -27,7 +31,7 @@ function generateRoomCode() {
   return code;
 }
 
-async function createSession(uid, username) {
+async function createSession(uid, username, displayName) {
   let code;
   let attempts = 0;
 
@@ -56,7 +60,7 @@ async function createSession(uid, username) {
   return code;
 }
 
-async function joinSession(code, uid, username) {
+async function joinSession(code, uid, username, displayName) {
   const sessionRef = db.collection('werewolf_sessions').doc(code);
   const sessionDoc = await sessionRef.get();
 
@@ -84,6 +88,7 @@ async function joinSession(code, uid, username) {
     if (!existingPlayerDoc.exists) {
       await playerRef.set({
         username: username,
+        displayName: displayName,
         ready: false,
         role: null,
         alive: true
@@ -97,6 +102,36 @@ async function joinSession(code, uid, username) {
   await db.collection('werewolf_users').doc(uid).update({ currentSessionId: code });
 
   return isMod;
+}
+
+// Moderator's "Play Again" — reuses the same room code and roster instead
+// of making everyone leave and re-join a brand new room. Clears everything
+// that belonged to the finished round (roles, alive status, votes, night
+// actions, winner) and drops the session back to 'lobby', where players
+// re-ready and the moderator clicks Start Game as normal. Every player's
+// game-screen listener (see ui.js) is watching for status flipping back to
+// 'lobby' and returns them to the lobby screen automatically.
+async function resetSessionForRematch(sessionId) {
+  const [playersSnap, votesSnap, nightSnap] = await Promise.all([
+    db.collection(`werewolf_sessions/${sessionId}/players`).get(),
+    db.collection(`werewolf_sessions/${sessionId}/votes`).get(),
+    db.collection(`werewolf_sessions/${sessionId}/nightActions`).get()
+  ]);
+
+  const batch = db.batch();
+  playersSnap.forEach(doc => batch.update(doc.ref, { role: null, alive: true, ready: false }));
+  votesSnap.forEach(doc => batch.delete(doc.ref));
+  nightSnap.forEach(doc => batch.delete(doc.ref));
+  batch.set(db.collection('werewolf_sessions').doc(sessionId), {
+    status: 'lobby',
+    phase: firebase.firestore.FieldValue.delete(),
+    nightStep: firebase.firestore.FieldValue.delete(),
+    votingOpen: false,
+    voteEligibleTargets: firebase.firestore.FieldValue.delete(),
+    announcement: null,
+    winner: firebase.firestore.FieldValue.delete()
+  }, { merge: true });
+  await batch.commit();
 }
 
 // Lets the moderator remove a player from the lobby roster entirely —
