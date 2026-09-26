@@ -109,7 +109,7 @@ async function handleRemovedFromLobby() {
   await db.collection('werewolf_users').doc(currentPlayerId)
     .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
     .catch(() => {}); // best-effort; not worth blocking on
-  alert("You were removed from the room by the moderator.");
+  alert("You're no longer in this room — either the moderator removed you, or the game started without you because you weren't marked Ready.");
   showScreen('lobby-choice-screen');
 }
 
@@ -130,25 +130,34 @@ async function startGame() {
   // would need a transaction, which isn't worth the complexity here.)
   await db.collection('werewolf_sessions').doc(currentSessionId).update({ status: 'started' });
 
-  // Defensive: strip out any stray moderator doc left behind by rooms
-  // created before this fix, so an old room can't hand the moderator a role.
+  // Only players who actually marked themselves Ready are counted and
+  // dealt a role — someone who's in the room but never readied up (joined
+  // by accident, got distracted, isn't actually playing) shouldn't count
+  // toward the werewolf math or take a slot away from someone who is
+  // playing. They're removed from the room the same way a moderator kick
+  // would be — see the read-only .filter below and the delete in the batch.
   const playersSnapshot = await db.collection(`werewolf_sessions/${currentSessionId}/players`).get();
-  const players = [];
+  const readyPlayers = [];
+  const notReadyRefs = [];
   playersSnapshot.forEach(doc => {
-    if (doc.id !== currentPlayerId) {
-      players.push({ id: doc.id, ...doc.data() });
+    if (doc.id === currentPlayerId) return; // defensive: stray moderator doc
+    if (doc.data().ready) {
+      readyPlayers.push({ id: doc.id, ...doc.data() });
+    } else {
+      notReadyRefs.push(doc.ref);
     }
   });
 
-  const roles = assignRoles(players.length); // from js/games/werewolf/rules.js
+  const roles = assignRoles(readyPlayers.length); // from js/games/werewolf/rules.js
 
   const batch = db.batch();
-  players.forEach((player, index) => {
+  readyPlayers.forEach((player, index) => {
     batch.update(
       db.collection(`werewolf_sessions/${currentSessionId}/players`).doc(player.id),
       { role: roles[index], alive: true }
     );
   });
+  notReadyRefs.forEach(ref => batch.delete(ref));
   await batch.commit();
 
   // The moderator jumps to the game screen immediately, with the full role list
