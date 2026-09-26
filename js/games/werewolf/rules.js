@@ -32,6 +32,20 @@ function assignRoles(playerCount) {
   return roles;
 }
 
+// Called after any elimination, before the win check. If the Chief
+// Werewolf just died and at least one ordinary werewolf is still alive,
+// promotes one of them to Chief so the werewolves always have someone able
+// to submit a night kill — otherwise voting out the Chief would silently
+// disable the werewolves' night action for the rest of the game. Returns
+// the promoted player's id, or null if no promotion was needed/possible.
+function pickChiefSuccessor(players) {
+  const hasAliveChief = players.some(p => p.alive !== false && p.role === 'chief_werewolf');
+  if (hasAliveChief) return null;
+  const candidates = players.filter(p => p.alive !== false && p.role === 'werewolf');
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)].id;
+}
+
 // players: array of { role, alive }. Returns 'werewolves', 'villagers', or
 // null if the game should continue. Checked after every elimination —
 // whether it came from a vote or the moderator's manual "Eliminate" button.

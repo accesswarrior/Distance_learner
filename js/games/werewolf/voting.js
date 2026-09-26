@@ -112,7 +112,8 @@ async function revealVoting(sessionId) {
 }
 
 // Moderator's manual override: eliminate any player immediately, regardless
-// of voting. Used for someone who had to step away mid-game, etc.
+// of voting. Used for a night kill the group resolved out loud, or to pull
+// someone who had to step away mid-game.
 async function eliminatePlayer(sessionId, uid) {
   await db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid).update({ alive: false });
 
@@ -122,7 +123,17 @@ async function eliminatePlayer(sessionId, uid) {
   await checkAndApplyWinner(sessionId, players);
 }
 
+// Called after every elimination, wherever it came from (day vote, night
+// kill, manual override). Handles Chief Werewolf succession first, since a
+// promotion can itself matter to the win check, then checks for a winner.
 async function checkAndApplyWinner(sessionId, players) {
+  const successorId = pickChiefSuccessor(players); // from rules.js
+  if (successorId) {
+    await db.collection(`werewolf_sessions/${sessionId}/players`).doc(successorId).update({ role: 'chief_werewolf' });
+    const successor = players.find(p => p.id === successorId);
+    if (successor) successor.role = 'chief_werewolf'; // keep the local copy in sync
+  }
+
   const winner = checkWinCondition(players); // from rules.js
   if (winner) {
     await db.collection('werewolf_sessions').doc(sessionId).update({ winner: winner });

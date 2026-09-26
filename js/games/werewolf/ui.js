@@ -36,19 +36,19 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
 
   function renderAnnouncement(a) {
     if (a.type === 'werewolf_out') {
-      return `<div class="banner">🐺 A Werewolf was voted out: <strong>${a.name}</strong></div>`;
+      return `<div class="banner">\ud83d\udc3a A Werewolf was voted out: <strong>${a.name}</strong></div>`;
     }
     if (a.type === 'night_death') {
-      return `<div class="banner">💀 <strong>${a.name}</strong> died during the night.</div>`;
+      return `<div class="banner">\ud83d\udc80 <strong>${a.name}</strong> died during the night.</div>`;
     }
     if (a.type === 'no_night_death') {
-      return `<div class="banner">☀️ No one died last night.</div>`;
+      return `<div class="banner">\u2600\ufe0f No one died last night.</div>`;
     }
     if (a.type === 'tie') {
-      return `<div class="banner">It's a tie between <strong>${a.names.join(', ')}</strong> — vote again, only between them.</div>`;
+      return `<div class="banner">It's a tie between <strong>${a.names.join(', ')}</strong> \u2014 vote again, only between them.</div>`;
     }
     if (a.type === 'still_tied') {
-      return `<div class="banner">Still tied between <strong>${a.names.join(', ')}</strong> — no one is eliminated this round.</div>`;
+      return `<div class="banner">Still tied between <strong>${a.names.join(', ')}</strong> \u2014 no one is eliminated this round.</div>`;
     }
     return `<div class="banner">Nobody was voted out.</div>`;
   }
@@ -71,10 +71,10 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       : `<div class="role-card">You are the <strong>Game Master</strong> — running this round.</div>`;
 
     if (sessionData.winner) {
-      const side = sessionData.winner === 'werewolves' ? '🐺 Werewolves' : '🧑‍🌾 Villagers';
+      const side = sessionData.winner === 'werewolves' ? '\ud83d\udc3a Werewolves' : '\ud83e\uddd1\u200d\ud83c\udf3e Villagers';
       html += `<div class="banner winner-banner">${side} win!</div>`;
     } else if (phase === 'night') {
-      html += `<div class="banner">🌙 Night${nightStep && nightStep !== 'done' ? ` — ${nightStep} acting` : ''}</div>`;
+      html += `<div class="banner">\ud83c\udf19 Night${nightStep && nightStep !== 'done' ? ` \u2014 ${nightStep} acting` : ''}</div>`;
     } else if (sessionData.announcement) {
       html += renderAnnouncement(sessionData.announcement);
     }
@@ -84,7 +84,7 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       players.forEach(p => {
         const eliminated = p.alive === false;
         html += `<li>
-          <span>${shownName(p)}: ${p.role}${eliminated ? ' — eliminated' : ''}</span>
+          <span>${shownName(p)}: ${p.role}${eliminated ? ' \u2014 eliminated' : ''}</span>
           ${!eliminated ? `<button class="eliminate-btn secondary-btn" data-uid="${p.id}">Eliminate</button>` : ''}
         </li>`;
       });
@@ -97,16 +97,16 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
             html += `<p>All night actions are in.</p><button id="end-night-btn" class="primary-btn">End Night</button>`;
           } else {
             const submitted = !!nightActionsMap[nightStep];
-            html += `<p>Active: <strong>${nightStep}</strong> — ${submitted ? '✔️ chosen' : 'waiting for their choice...'}</p>`;
+            html += `<p>Active: <strong>${nightStep}</strong> \u2014 ${submitted ? '\u2714\ufe0f chosen' : 'waiting for their choice...'}</p>`;
             html += `<button id="advance-night-btn" class="primary-btn">${submitted ? 'Next' : 'Skip / Next'}</button>`;
           }
           if (nightActionsMap.doctor) {
             const saved = players.find(p => p.id === nightActionsMap.doctor.targetId);
-            html += `<p class="hint-text">Doctor is protecting: ${saved ? shownName(saved) : '—'}</p>`;
+            html += `<p class="hint-text">Doctor is protecting: ${saved ? shownName(saved) : '\u2014'}</p>`;
           }
           if (nightActionsMap.chief_werewolf) {
             const target = players.find(p => p.id === nightActionsMap.chief_werewolf.targetId);
-            html += `<p class="hint-text">Chief Werewolf is targeting: ${target ? shownName(target) : '—'}</p>`;
+            html += `<p class="hint-text">Chief Werewolf is targeting: ${target ? shownName(target) : '\u2014'}</p>`;
           }
           html += `</div>`;
         } else if (!sessionData.votingOpen) {
@@ -119,14 +119,16 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
                 return p ? shownName(p) : 'Unknown';
               }).join(', ')
             : null;
-          html += `<p>${voteCount} of ${alivePlayers.length} alive players voted${runoffNames ? ` — runoff: ${runoffNames}` : ''}</p>`;
+          html += `<p>${voteCount} of ${alivePlayers.length} alive players voted${runoffNames ? ` \u2014 runoff: ${runoffNames}` : ''}</p>`;
           html += `<button id="reveal-voting-btn" class="primary-btn">Reveal Result</button>`;
         }
+      } else {
+        html += `<button id="play-again-btn" class="primary-btn">Play Again (same room)</button>`;
       }
     } else if (phase === 'night' && !sessionData.winner) {
       if (myRole === nightStep && iAmAlive) {
         if (myRole === 'seer' && seerCheckResult) {
-          html += `<div class="banner">${seerCheckResult.targetName} is ${seerCheckResult.isWerewolf ? 'a 🐺 Werewolf' : 'not a Werewolf'}.</div>`;
+          html += `<div class="banner">${seerCheckResult.targetName} is ${seerCheckResult.isWerewolf ? 'a \ud83d\udc3a Werewolf' : 'not a Werewolf'}.</div>`;
         } else {
           const label = myRole === 'doctor' ? 'Choose someone to save:'
             : myRole === 'chief_werewolf' ? 'Choose someone to eliminate:'
@@ -145,17 +147,17 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       }
     } else if (sessionData.votingOpen && iAmAlive && !sessionData.winner) {
       const eligibleIds = sessionData.voteEligibleTargets || null;
-      const heading = eligibleIds ? 'Runoff vote — pick one:' : 'Vote to eliminate:';
+      const heading = eligibleIds ? 'Runoff vote \u2014 pick one:' : 'Vote to eliminate:';
       html += `<h3>${heading}</h3><ul class="player-list" id="vote-list">`;
       alivePlayers
         .filter(p => p.id !== playerId)
         .filter(p => !eligibleIds || eligibleIds.includes(p.id))
         .forEach(p => {
         const selected = myVote === p.id;
-        html += `<li><button class="vote-btn secondary-btn${selected ? ' selected' : ''}" data-uid="${p.id}">${shownName(p)}${selected ? ' ✔️' : ''}</button></li>`;
+        html += `<li><button class="vote-btn secondary-btn${selected ? ' selected' : ''}" data-uid="${p.id}">${shownName(p)}${selected ? ' \u2714\ufe0f' : ''}</button></li>`;
       });
       html += `</ul>`;
-      if (myVote) html += `<p>Your vote is in — tap another name to change it.</p>`;
+      if (myVote) html += `<p>Your vote is in \u2014 tap another name to change it.</p>`;
     }
 
     html += `<button class="logout-btn secondary-btn">Logout</button>`;
@@ -175,6 +177,8 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
       if (advanceBtn) advanceBtn.addEventListener('click', () => advanceNight(sessionId, nightStep));
       const endNightBtn = document.getElementById('end-night-btn');
       if (endNightBtn) endNightBtn.addEventListener('click', () => endNight(sessionId));
+      const playAgainBtn = document.getElementById('play-again-btn');
+      if (playAgainBtn) playAgainBtn.addEventListener('click', () => resetSessionForRematch(sessionId));
     } else {
       document.querySelectorAll('.vote-btn').forEach(btn => {
         btn.addEventListener('click', () => castVote(sessionId, playerId, btn.dataset.uid));
@@ -198,6 +202,17 @@ function renderGameScreen(sessionId, playerId, isMod, myRole) {
   gameUnsubscribers.push(
     db.collection('werewolf_sessions').doc(sessionId).onSnapshot(doc => {
       const newData = doc.data() || {};
+
+      // Moderator hit "Play Again" — status is back to 'lobby'. Send
+      // everyone (including the moderator's own client) back to the lobby
+      // to re-ready, rather than leaving them staring at a finished round.
+      if (newData.status === 'lobby') {
+        clearGameListeners();
+        renderLobby(sessionId, playerId, isMod);
+        showScreen('lobby-screen');
+        return;
+      }
+
       // A fresh night step (or leaving night phase) invalidates any
       // in-progress local action state from the previous step.
       if (newData.nightStep !== sessionData.nightStep || newData.phase !== sessionData.phase) {
