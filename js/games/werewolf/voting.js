@@ -124,8 +124,11 @@ async function eliminatePlayer(sessionId, uid) {
 }
 
 // Called after every elimination, wherever it came from (day vote, night
-// kill, manual override). Handles Chief Werewolf succession first, since a
-// promotion can itself matter to the win check, then checks for a winner.
+// resolution, manual override, or a Hunter's own revenge shot). Order
+// matters: Chief Werewolf succession first (a promotion can affect the win
+// check), then a check for a newly-eliminated Hunter who hasn't fired yet —
+// if one exists, the round holds there instead of announcing a winner,
+// since the Hunter's shot could still change the outcome.
 async function checkAndApplyWinner(sessionId, players) {
   const successorId = pickChiefSuccessor(players); // from rules.js
   if (successorId) {
@@ -134,8 +137,51 @@ async function checkAndApplyWinner(sessionId, players) {
     if (successor) successor.role = 'chief_werewolf'; // keep the local copy in sync
   }
 
+  const pendingHunterId = findPendingHunter(players); // from rules.js
+  if (pendingHunterId) {
+    const hunter = players.find(p => p.id === pendingHunterId);
+    await db.collection('werewolf_sessions').doc(sessionId).update({
+      pendingHunterShot: pendingHunterId,
+      announcement: { type: 'hunter_pending', name: hunter ? (hunter.displayName || hunter.username) : 'A Hunter' }
+    });
+    return; // hold off on the win check until the shot resolves
+  }
+
   const winner = checkWinCondition(players); // from rules.js
   if (winner) {
     await db.collection('werewolf_sessions').doc(sessionId).update({ winner: winner });
   }
+}
+
+// The eliminated Hunter's one-time revenge shot — targetId is optional
+// (they can skip). Firestore rules allow this specific write to someone
+// else's player doc ONLY while session.pendingHunterShot equals the
+// Hunter's own uid, and only for as long as it takes to fire.
+async function fireHunterShot(sessionId, hunterId, targetId) {
+  const hunterDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(hunterId).get();
+  const hunterName = hunterDoc.exists ? (hunterDoc.data().displayName || hunterDoc.data().username) : 'The Hunter';
+
+  const batch = db.batch();
+  batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(hunterId), { hunterShotUsed: true });
+
+  let announcement;
+  if (targetId) {
+    const targetDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(targetId).get();
+    const targetName = targetDoc.exists ? (targetDoc.data().displayName || targetDoc.data().username) : 'someone';
+    batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(targetId), { alive: false });
+    announcement = { type: 'hunter_shot', hunterName: hunterName, targetName: targetName };
+  } else {
+    announcement = { type: 'hunter_skipped', hunterName: hunterName };
+  }
+
+  batch.update(db.collection('werewolf_sessions').doc(sessionId), {
+    pendingHunterShot: firebase.firestore.FieldValue.delete(),
+    announcement: announcement
+  });
+  await batch.commit();
+
+  const playersSnap = await db.collection(`werewolf_sessions/${sessionId}/players`).get();
+  const players = [];
+  playersSnap.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
+  await checkAndApplyWinner(sessionId, players); // could chain into another pending Hunter, handled naturally
 }
