@@ -1,39 +1,34 @@
 // js/games/werewolf/voting.js
-// In-app day-phase voting + manual moderator override + win-condition
-// resolution + the Hunter's last shot.
+// In-app day-phase voting, manual moderator override, win-condition
+// resolution, and the Hunter's last shot.
 //
-// Secret ballot: only the voter and the moderator can read a vote doc —
-// enforced by firestore.rules, not just the UI. Vote content is also
-// validated server-side: only while voting is open, only against a living
-// player who isn't the voter, and (during a runoff) only against one of
-// the tied names.
+// STANDARD ELIMINATION RULE: the voted-out player dies, regardless of
+// role. The announcement reveals whether they were a werewolf. This is a
+// change from the earlier "missed votes cost nothing" variant.
 //
-// Tie handling: a top-tie opens a runoff where only the tied names are
-// valid targets. A runoff tie ends the round with "still tied, nobody
-// eliminated" rather than looping.
-//
-// Schema additions (all under werewolf_sessions/{sessionId}):
-//   .votingOpen           -> bool
-//   .voteEligibleTargets  -> [uid, ...] | absent (present only during a runoff)
-//   .announcement         -> { type, ... } | null
-//   .deathSeen            -> [uid, ...] (reset by every announcement producer)
-//   .winner               -> 'werewolves' | 'villagers' | null
-//   /votes/{voterId}      -> { targetId, updatedAt }
+// The announcement and pendingHunterShot are INDEPENDENT pieces of state.
+// checkAndApplyWinner no longer overwrites the announcement when it
+// detects a pending Hunter — the UI shows both.
 
 async function startVoting(sessionId) {
+  const snap = await db.collection('werewolf_sessions').doc(sessionId).get();
+  const data = snap.data() || {};
+  if (data.votingOpen) return;          // already open
+  if (data.phase === 'night') return;   // not during night
+  if (data.winner) return;
+
   const votesSnap = await db.collection(`werewolf_sessions/${sessionId}/votes`).get();
   const batch = db.batch();
   votesSnap.forEach(doc => batch.delete(doc.ref));
-  batch.set(db.collection('werewolf_sessions').doc(sessionId), {
+  batch.update(db.collection('werewolf_sessions').doc(sessionId), {
     votingOpen: true,
-    announcement: null,
+    announcement: firebase.firestore.FieldValue.delete(),
     deathSeen: [],
     voteEligibleTargets: firebase.firestore.FieldValue.delete()
-  }, { merge: true });
+  });
   await batch.commit();
 }
 
-// Safe to call repeatedly — each player has exactly one vote doc.
 async function castVote(sessionId, voterId, targetId) {
   try {
     await db.collection(`werewolf_sessions/${sessionId}/votes`).doc(voterId).set({
@@ -47,18 +42,20 @@ async function castVote(sessionId, voterId, targetId) {
 }
 
 async function revealVoting(sessionId) {
-  const sessionDoc = await db.collection('werewolf_sessions').doc(sessionId).get();
-  const wasRunoff = !!(sessionDoc.data() && sessionDoc.data().voteEligibleTargets);
+  const snap = await db.collection('werewolf_sessions').doc(sessionId).get();
+  const data = snap.data() || {};
+  if (!data.votingOpen) return;   // already resolved
+  const wasRunoff = !!data.voteEligibleTargets;
 
   const votesSnap = await db.collection(`werewolf_sessions/${sessionId}/votes`).get();
   const tally = {};
   votesSnap.forEach(doc => {
-    const targetId = doc.data().targetId;
-    tally[targetId] = (tally[targetId] || 0) + 1;
+    const t = doc.data().targetId;
+    tally[t] = (tally[t] || 0) + 1;
   });
 
   let topCount = 0;
-  Object.values(tally).forEach(count => { if (count > topCount) topCount = count; });
+  Object.values(tally).forEach(c => { if (c > topCount) topCount = c; });
   const topIds = Object.keys(tally).filter(id => tally[id] === topCount);
 
   const playersSnap = await db.collection(`werewolf_sessions/${sessionId}/players`).get();
@@ -71,6 +68,7 @@ async function revealVoting(sessionId) {
 
   let announcement = { type: 'none' };
   let nextVoteEligible = null;
+  const deathIds = [];
 
   if (topIds.length > 1) {
     const tiedNames = topIds.map(nameOf);
@@ -82,53 +80,62 @@ async function revealVoting(sessionId) {
     }
   } else if (topIds.length === 1) {
     const target = players.find(p => p.id === topIds[0]);
-    if (target && isWerewolf(target.role)) {
-      await db.collection(`werewolf_sessions/${sessionId}/players`).doc(target.id).update({ alive: false });
+    if (target && target.participationStatus !== 'removed') {
+      deathIds.push(target.id);
       target.alive = false;
-      announcement = { type: 'werewolf_out', name: target.displayName || target.username };
+      announcement = isWerewolf(target.role)
+        ? { type: 'werewolf_out', name: target.displayName || target.username }
+        : { type: 'villager_out', name: target.displayName || target.username };
     }
   }
 
   const batch = db.batch();
+  deathIds.forEach(id => {
+    batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(id), { alive: false });
+  });
   votesSnap.forEach(doc => batch.delete(doc.ref));
-  batch.set(db.collection('werewolf_sessions').doc(sessionId), {
+  batch.update(db.collection('werewolf_sessions').doc(sessionId), {
     votingOpen: !!nextVoteEligible,
     announcement: announcement,
-    deathSeen: [], // fresh list for this reveal
+    deathSeen: [],
     voteEligibleTargets: nextVoteEligible || firebase.firestore.FieldValue.delete()
-  }, { merge: true });
+  });
   await batch.commit();
 
   await checkAndApplyWinner(sessionId, players);
 }
 
-// Moderator's manual override. Also used for a night kill resolved out loud.
 async function eliminatePlayer(sessionId, uid) {
-  await db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid).update({ alive: false });
+  const ref = db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid);
+  const doc = await ref.get();
+  if (!doc.exists) return;
+  if (doc.data().alive === false) return;   // already dead — idempotent
+
+  await ref.update({ alive: false });
 
   const playersSnap = await db.collection(`werewolf_sessions/${sessionId}/players`).get();
   const players = [];
-  playersSnap.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
+  playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
   await checkAndApplyWinner(sessionId, players);
 }
 
-// Called after every elimination. Order matters: chief succession first
-// (a promotion affects the win check), then a check for a newly-eliminated
-// Hunter who hasn't fired — the round holds there.
 async function checkAndApplyWinner(sessionId, players) {
   const successorId = pickChiefSuccessor(players);
   if (successorId) {
-    await db.collection(`werewolf_sessions/${sessionId}/players`).doc(successorId).update({ role: 'chief_werewolf' });
+    await db.collection(`werewolf_sessions/${sessionId}/players`).doc(successorId)
+      .update({ role: 'chief_werewolf' });
     const successor = players.find(p => p.id === successorId);
     if (successor) successor.role = 'chief_werewolf';
   }
 
   const pendingHunterId = findPendingHunter(players);
   if (pendingHunterId) {
-    const hunter = players.find(p => p.id === pendingHunterId);
+    // IMPORTANT: do NOT touch announcement. Whatever the caller set
+    // (night_death, villager_out, werewolf_out, ...) stays visible. The
+    // UI adds a separate "waiting for Hunter" line when pendingHunterShot
+    // is set.
     await db.collection('werewolf_sessions').doc(sessionId).update({
-      pendingHunterShot: pendingHunterId,
-      announcement: { type: 'hunter_pending', name: hunter ? (hunter.displayName || hunter.username) : 'A Hunter' }
+      pendingHunterShot: pendingHunterId
     });
     return;
   }
@@ -139,14 +146,39 @@ async function checkAndApplyWinner(sessionId, players) {
   }
 }
 
-// The eliminated Hunter's one-time revenge shot. targetId optional (skip).
-// Firestore rules allow this specific write to another player's doc ONLY
-// while session.pendingHunterShot names the shooter.
-//
-// deathSeen is reset here because this write replaces the announcement with
-// the shot result, which is itself an announcement the room needs to tap
-// through.
+// Moderator escape hatch: resolve a pending Hunter shot without the
+// Hunter's input (phone dead, player gone). Clears pendingHunterShot and
+// posts a "skipped" announcement.
+async function skipHunterShot(sessionId) {
+  const snap = await db.collection('werewolf_sessions').doc(sessionId).get();
+  const data = snap.data() || {};
+  const hunterId = data.pendingHunterShot;
+  if (!hunterId) return;
+
+  const hunterDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(hunterId).get();
+  const hunterName = hunterDoc.exists
+    ? (hunterDoc.data().displayName || hunterDoc.data().username)
+    : 'The Hunter';
+
+  const batch = db.batch();
+  batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(hunterId), { hunterShotUsed: true });
+  batch.update(db.collection('werewolf_sessions').doc(sessionId), {
+    pendingHunterShot: firebase.firestore.FieldValue.delete(),
+    announcement: { type: 'hunter_skipped', hunterName: hunterName },
+    deathSeen: []
+  });
+  await batch.commit();
+
+  const playersSnap = await db.collection(`werewolf_sessions/${sessionId}/players`).get();
+  const players = [];
+  playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
+  await checkAndApplyWinner(sessionId, players);
+}
+
 async function fireHunterShot(sessionId, hunterId, targetId) {
+  const snap = await db.collection('werewolf_sessions').doc(sessionId).get();
+  if (snap.data().pendingHunterShot !== hunterId) return;  // not the pending Hunter — bail
+
   const hunterDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(hunterId).get();
   const hunterName = hunterDoc.exists
     ? (hunterDoc.data().displayName || hunterDoc.data().username)
@@ -176,6 +208,6 @@ async function fireHunterShot(sessionId, hunterId, targetId) {
 
   const playersSnap = await db.collection(`werewolf_sessions/${sessionId}/players`).get();
   const players = [];
-  playersSnap.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
+  playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
   await checkAndApplyWinner(sessionId, players);
 }
