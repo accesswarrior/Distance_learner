@@ -1,86 +1,104 @@
 // js/games/werewolf/voting.js
+// In-app day-phase voting, manual moderator override, win-condition
+// resolution, and the Hunter's last shot.
 //
-// Adds two moderator powers on top of the existing lobby/role-assignment
-// flow, plus in-app voting:
-//   1. Manual "Eliminate" — the moderator removes a player at any point
-//      (someone who has to leave, an off-app correction, etc).
-//   2. In-app day-phase voting — players tap a name instead of the
-//      point-on-3 method. If the top vote-getter is a Werewolf (or the
-//      Chief Werewolf) they're eliminated and named. If the top vote-getter
-//      is NOT a werewolf, nothing happens and nothing is revealed — not the
-//      leader, not the count — so a wrong guess doesn't leak information
-//      for free. A tie for the top spot is its own case: see below.
+// ELIMINATION RULE (reverted to the original house rule): the day vote
+// only kills and names someone if they're a confirmed Werewolf (or Chief).
+// If the top vote-getter isn't a werewolf, nothing happens and nothing is
+// revealed — no name, no count. A wrongly-voted innocent survives with no
+// information leaked. This is deliberate: it keeps trust and consensus
+// central to the day phase instead of turning every vote into a free
+// reveal regardless of whether the group guessed right.
 //
-// Tie handling: if two or more players are tied for the most votes, nobody
-// is eliminated yet. Instead the tied names are announced, and the very
-// next vote automatically re-opens as a runoff where those tied players
-// are the *only* valid targets (everyone can still vote, just not for
-// themselves). If that runoff also ties, we stop there — announce "still
-// tied, nobody eliminated" — rather than looping forever; the moderator can
-// always run a fresh full vote later if they want to try again.
+// The announcement and pendingHunterShot are INDEPENDENT pieces of state.
+// checkAndApplyWinner never overwrites the announcement when it detects a
+// pending Hunter — the UI shows both at once.
 //
-// Schema additions (all under werewolf_sessions/{sessionId}):
-//   .votingOpen           -> bool
-//   .voteEligibleTargets  -> [uid, ...] | absent  (present only during a runoff)
-//   .announcement         -> { type, name/names } | null
-//     types: 'werewolf_out' | 'none' | 'tie' | 'still_tied' |
-//            'night_death' | 'no_night_death'
-//   .winner               -> 'werewolves' | 'villagers' | null
-//   /votes/{voterId}      -> { targetId, updatedAt }  (cleared after every reveal)
+// Two different resolution paths exist for the SAME underlying logic:
+//   - checkAndApplyWinner() — used by every MODERATOR-invoked elimination
+//     (revealVoting, eliminatePlayer, endNight's night.js call, and
+//     skipHunterShot). The moderator can write anything, so this applies
+//     Chief succession and the winner directly, in separate small writes.
+//   - fireHunterShot() — the ONE non-moderator caller. A Hunter's client
+//     can't read other players' roles or write `role`/`winner`, so it just
+//     records the shot and raises pendingWinRecheck; the moderator's client
+//     then runs checkAndApplyWinner() with full data (applyPendingWinRecheck,
+//     consumed from ui.js's session listener).
 
-// Opens a new, unrestricted voting round (not a runoff). Clears any stray
-// vote docs from the previous round first, so a slow write from a prior
-// reveal can't leak into this one.
 async function startVoting(sessionId) {
+  const snap = await db.collection('werewolf_sessions').doc(sessionId).get();
+  const data = snap.data() || {};
+  if (data.votingOpen) return;          // already open
+  if ((data.phase || 'day') !== 'day') return; // voting is a day-phase state (missing phase = day)
+  if (data.pendingHunterShot) return;    // Hunter must resolve first
+  if (data.winner) return;
+
   const votesSnap = await db.collection(`werewolf_sessions/${sessionId}/votes`).get();
   const batch = db.batch();
   votesSnap.forEach(doc => batch.delete(doc.ref));
-  batch.set(db.collection('werewolf_sessions').doc(sessionId), {
+  batch.update(db.collection('werewolf_sessions').doc(sessionId), {
     votingOpen: true,
-    announcement: null,
-    voteEligibleTargets: firebase.firestore.FieldValue.delete()
-  }, { merge: true });
+    announcement: firebase.firestore.FieldValue.delete(),
+    deathSeen: [],
+    voteEligibleTargets: firebase.firestore.FieldValue.delete(),
+    discussionTimerEndsAt: firebase.firestore.FieldValue.delete()
+  });
   await batch.commit();
 }
 
-// A player casts (or changes) their vote. Safe to call repeatedly — each
-// player has exactly one vote doc, so re-tapping just overwrites the target.
 async function castVote(sessionId, voterId, targetId) {
-  await db.collection(`werewolf_sessions/${sessionId}/votes`).doc(voterId).set({
-    targetId: targetId,
-    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-  });
+  try {
+    await db.collection(`werewolf_sessions/${sessionId}/votes`).doc(voterId).set({
+      targetId: targetId,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (err) {
+    console.warn('Vote rejected by security rules:', err);
+    alert('That vote could not be recorded — voting may have just closed.');
+  }
 }
 
-// Moderator taps "Reveal Result" whenever they're ready (no turnout
-// requirement). Tallies votes, then handles three cases: a clear top
-// vote-getter, a tie (opens a runoff among just the tied names), or a tie
-// that happened *during* a runoff (stops there instead of looping).
-async function revealVoting(sessionId) {
-  const sessionDoc = await db.collection('werewolf_sessions').doc(sessionId).get();
-  const wasRunoff = !!(sessionDoc.data() && sessionDoc.data().voteEligibleTargets);
+async function revealVoting(sessionId, force = false) {
+  const snap = await db.collection('werewolf_sessions').doc(sessionId).get();
+  const data = snap.data() || {};
+  if (!data.votingOpen) return;   // already resolved
+  const wasRunoff = !!data.voteEligibleTargets;
 
-  const votesSnap = await db.collection(`werewolf_sessions/${sessionId}/votes`).get();
-  const tally = {};
+  const [votesSnap, playersSnap] = await Promise.all([
+    db.collection(`werewolf_sessions/${sessionId}/votes`).get(),
+    db.collection(`werewolf_sessions/${sessionId}/players`).get()
+  ]);
+  const eligibleVoterIds = new Set();
+  const players = [];
+  playersSnap.forEach(doc => {
+    const p = { id: doc.id, ...doc.data() };
+    players.push(p);
+    if (p.participationStatus !== 'removed' && p.alive !== false) eligibleVoterIds.add(p.id);
+  });
+  const validVotes = [];
   votesSnap.forEach(doc => {
-    const targetId = doc.data().targetId;
-    tally[targetId] = (tally[targetId] || 0) + 1;
+    if (eligibleVoterIds.has(doc.id)) validVotes.push(doc);
+  });
+  if (!force && validVotes.length < eligibleVoterIds.size) return;
+
+  const tally = {};
+  validVotes.forEach(doc => {
+    const t = doc.data().targetId;
+    tally[t] = (tally[t] || 0) + 1;
   });
 
   let topCount = 0;
-  Object.values(tally).forEach(count => { if (count > topCount) topCount = count; });
+  Object.values(tally).forEach(c => { if (c > topCount) topCount = c; });
   const topIds = Object.keys(tally).filter(id => tally[id] === topCount);
 
-  const playersSnap = await db.collection(`werewolf_sessions/${sessionId}/players`).get();
-  const players = [];
-  playersSnap.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
   const nameOf = id => {
     const p = players.find(pp => pp.id === id);
     return p ? (p.displayName || p.username) : 'Unknown';
   };
 
   let announcement = { type: 'none' };
-  let nextVoteEligible = null; // set only when we're opening a runoff
+  let nextVoteEligible = null;
+  const deathIds = [];
 
   if (topIds.length > 1) {
     const tiedNames = topIds.map(nameOf);
@@ -92,96 +110,199 @@ async function revealVoting(sessionId) {
     }
   } else if (topIds.length === 1) {
     const target = players.find(p => p.id === topIds[0]);
-    if (target && isWerewolf(target.role)) { // isWerewolf from rules.js
-      await db.collection(`werewolf_sessions/${sessionId}/players`).doc(target.id).update({ alive: false });
-      target.alive = false; // keep the local copy in sync for the win check below
+    if (target && target.participationStatus !== 'removed' && isWerewolf(target.role)) {
+      deathIds.push(target.id);
+      target.alive = false;
       announcement = { type: 'werewolf_out', name: target.displayName || target.username };
     }
+    // else: top vote-getter isn't a Werewolf. Nothing is eliminated,
+    // nothing is revealed — see the file header for why.
   }
 
   const batch = db.batch();
+  deathIds.forEach(id => {
+    batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(id), { alive: false });
+    batch.update(db.collection(`werewolf_sessions/${sessionId}/roster`).doc(id), { alive: false });
+  });
   votesSnap.forEach(doc => batch.delete(doc.ref));
-  batch.set(db.collection('werewolf_sessions').doc(sessionId), {
-    votingOpen: !!nextVoteEligible, // stays open only when rolling straight into a runoff
+  batch.update(db.collection('werewolf_sessions').doc(sessionId), {
+    votingOpen: !!nextVoteEligible,
     announcement: announcement,
-    voteEligibleTargets: nextVoteEligible || firebase.firestore.FieldValue.delete()
-  }, { merge: true });
+    deathSeen: [],
+    voteEligibleTargets: nextVoteEligible || firebase.firestore.FieldValue.delete(),
+    discussionTimerEndsAt: firebase.firestore.FieldValue.delete()
+  });
   await batch.commit();
 
   await checkAndApplyWinner(sessionId, players);
 }
 
-// Moderator's manual override: eliminate any player immediately, regardless
-// of voting. Used for a night kill the group resolved out loud, or to pull
-// someone who had to step away mid-game.
 async function eliminatePlayer(sessionId, uid) {
-  await db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid).update({ alive: false });
+  const ref = db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid);
+  const doc = await ref.get();
+  if (!doc.exists) return;
+  if (doc.data().alive === false) return;   // already dead — idempotent
+
+  const batch = db.batch();
+  batch.update(ref, { alive: false });
+  batch.update(db.collection(`werewolf_sessions/${sessionId}/roster`).doc(uid), { alive: false });
+  const sessionSnap = await db.collection('werewolf_sessions').doc(sessionId).get();
+  if ((sessionSnap.data() || {}).votingOpen) {
+    batch.delete(db.collection(`werewolf_sessions/${sessionId}/votes`).doc(uid));
+  }
+  await batch.commit();
 
   const playersSnap = await db.collection(`werewolf_sessions/${sessionId}/players`).get();
   const players = [];
-  playersSnap.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
+  playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
   await checkAndApplyWinner(sessionId, players);
 }
 
-// Called after every elimination, wherever it came from (day vote, night
-// resolution, manual override, or a Hunter's own revenge shot). Order
-// matters: Chief Werewolf succession first (a promotion can affect the win
-// check), then a check for a newly-eliminated Hunter who hasn't fired yet —
-// if one exists, the round holds there instead of announcing a winner,
-// since the Hunter's shot could still change the outcome.
-async function checkAndApplyWinner(sessionId, players) {
+// Pure — no Firestore reads or writes. Given the current players (with any
+// local mutations for a death already applied by the caller), figures out
+// what should happen next. Callers decide HOW to apply it, since a
+// moderator and a firing Hunter have different write permissions.
+function resolveOutcome(players) {
   const successorId = pickChiefSuccessor(players); // from rules.js
   if (successorId) {
-    await db.collection(`werewolf_sessions/${sessionId}/players`).doc(successorId).update({ role: 'chief_werewolf' });
     const successor = players.find(p => p.id === successorId);
-    if (successor) successor.role = 'chief_werewolf'; // keep the local copy in sync
+    if (successor) successor.role = 'chief_werewolf'; // for the checks below; caller writes it for real
   }
 
   const pendingHunterId = findPendingHunter(players); // from rules.js
   if (pendingHunterId) {
-    const hunter = players.find(p => p.id === pendingHunterId);
-    await db.collection('werewolf_sessions').doc(sessionId).update({
-      pendingHunterShot: pendingHunterId,
-      announcement: { type: 'hunter_pending', name: hunter ? (hunter.displayName || hunter.username) : 'A Hunter' }
-    });
-    return; // hold off on the win check until the shot resolves
+    return { successorId: successorId || null, pendingHunterShot: pendingHunterId, winner: null };
   }
 
-  const winner = checkWinCondition(players); // from rules.js
-  if (winner) {
-    await db.collection('werewolf_sessions').doc(sessionId).update({ winner: winner });
+  return { successorId: successorId || null, pendingHunterShot: null, winner: checkWinCondition(players) };
+}
+
+// Moderator-authority path. Used by every elimination that originates from
+// the moderator's own client (revealVoting, eliminatePlayer, endNight,
+// skipHunterShot) — none of them need the queuing fireHunterShot uses,
+// because the moderator can write role/winner directly.
+async function checkAndApplyWinner(sessionId, players) {
+  const outcome = resolveOutcome(players);
+
+  if (outcome.successorId) {
+    await db.collection(`werewolf_sessions/${sessionId}/players`).doc(outcome.successorId)
+      .update({ role: 'chief_werewolf' });
+  }
+
+  if (outcome.pendingHunterShot) {
+    // IMPORTANT: do NOT touch announcement here. Whatever the caller set
+    // (night_death, werewolf_out, ...) stays visible; the UI adds a
+    // separate "waiting for Hunter" line when pendingHunterShot is set.
+    await db.collection('werewolf_sessions').doc(sessionId).update({
+      pendingHunterShot: outcome.pendingHunterShot
+    });
+    return;
+  }
+
+  if (outcome.winner) {
+    await db.collection('werewolf_sessions').doc(sessionId).update({
+      winner: outcome.winner,
+      votingOpen: false,
+      voteEligibleTargets: firebase.firestore.FieldValue.delete()
+    });
   }
 }
 
-// The eliminated Hunter's one-time revenge shot — targetId is optional
-// (they can skip). Firestore rules allow this specific write to someone
-// else's player doc ONLY while session.pendingHunterShot equals the
-// Hunter's own uid, and only for as long as it takes to fire.
-async function fireHunterShot(sessionId, hunterId, targetId) {
+// Moderator escape hatch: resolve a pending Hunter shot without the
+// Hunter's input (phone dead, player gone). Moderator-invoked, so it calls
+// checkAndApplyWinner() directly — no queue needed, unlike fireHunterShot().
+async function skipHunterShot(sessionId) {
+  const snap = await db.collection('werewolf_sessions').doc(sessionId).get();
+  const data = snap.data() || {};
+  const hunterId = data.pendingHunterShot;
+  if (!hunterId) return;
+
   const hunterDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(hunterId).get();
-  const hunterName = hunterDoc.exists ? (hunterDoc.data().displayName || hunterDoc.data().username) : 'The Hunter';
+  const hunterName = hunterDoc.exists
+    ? (hunterDoc.data().displayName || hunterDoc.data().username)
+    : 'The Hunter';
 
   const batch = db.batch();
   batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(hunterId), { hunterShotUsed: true });
-
-  let announcement;
-  if (targetId) {
-    const targetDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(targetId).get();
-    const targetName = targetDoc.exists ? (targetDoc.data().displayName || targetDoc.data().username) : 'someone';
-    batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(targetId), { alive: false });
-    announcement = { type: 'hunter_shot', hunterName: hunterName, targetName: targetName };
-  } else {
-    announcement = { type: 'hunter_skipped', hunterName: hunterName };
-  }
-
   batch.update(db.collection('werewolf_sessions').doc(sessionId), {
     pendingHunterShot: firebase.firestore.FieldValue.delete(),
-    announcement: announcement
+    announcement: { type: 'hunter_skipped', hunterName: hunterName },
+    deathSeen: []
   });
   await batch.commit();
 
   const playersSnap = await db.collection(`werewolf_sessions/${sessionId}/players`).get();
   const players = [];
-  playersSnap.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
-  await checkAndApplyWinner(sessionId, players); // could chain into another pending Hunter, handled naturally
+  playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
+  const hunter = players.find(p => p.id === hunterId);
+  if (hunter) hunter.hunterShotUsed = true;
+  await checkAndApplyWinner(sessionId, players);
+}
+
+// Fired from the HUNTER'S OWN client — the one non-moderator resolution
+// path in the game. It deliberately touches ONLY what firestore.rules
+// grants a pending Hunter, and reads ONLY what a Hunter is allowed to read:
+//   - the PUBLIC roster (names) — never a /players collection query. A
+//     regular player's collection query on /players is rejected outright
+//     by Firestore (the rule can't be proven for every document), which is
+//     exactly what broke the previous version of this function.
+//   - writes: their own hunterShotUsed, the target's alive (players AND
+//     roster), and session { pendingHunterShot, announcement, deathSeen,
+//     pendingWinRecheck }.
+// A Hunter's client can't see anyone's role, so it can't decide Chief
+// succession or the winner. It raises pendingWinRecheck instead, and the
+// moderator's always-listening client runs the full check (see
+// applyPendingWinRecheck below and ui.js's session listener).
+async function fireHunterShot(sessionId, hunterId, targetId) {
+  const sessionRef = db.collection('werewolf_sessions').doc(sessionId);
+  const snap = await sessionRef.get();
+  if ((snap.data() || {}).pendingHunterShot !== hunterId) return; // not the pending Hunter — bail
+
+  const rosterName = async (uid, fallback) => {
+    const d = await db.collection(`werewolf_sessions/${sessionId}/roster`).doc(uid).get();
+    return d.exists ? (d.data().displayName || d.data().username || fallback) : fallback;
+  };
+
+  const hunterName = await rosterName(hunterId, 'The Hunter');
+  const batch = db.batch();
+  batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(hunterId), { hunterShotUsed: true });
+
+  let announcement;
+  if (targetId) {
+    const targetName = await rosterName(targetId, 'someone');
+    batch.update(db.collection(`werewolf_sessions/${sessionId}/players`).doc(targetId), { alive: false });
+    batch.update(db.collection(`werewolf_sessions/${sessionId}/roster`).doc(targetId), { alive: false });
+    announcement = { type: 'hunter_shot', hunterName: hunterName, targetName: targetName };
+  } else {
+    announcement = { type: 'hunter_skipped', hunterName: hunterName };
+  }
+
+  batch.update(sessionRef, {
+    pendingHunterShot: firebase.firestore.FieldValue.delete(),
+    announcement: announcement,
+    deathSeen: [],
+    pendingWinRecheck: true
+  });
+  await batch.commit();
+}
+
+// Consumed ONLY by the moderator's client (ui.js session listener). Runs
+// the same succession / chained-Hunter / win check every other elimination
+// gets, with full read access to /players, then clears the flag. The
+// in-flight guard stops the listener (which fires more than once per
+// change) from running it twice concurrently.
+let winRecheckInFlight = false;
+async function applyPendingWinRecheck(sessionId) {
+  if (winRecheckInFlight) return;
+  winRecheckInFlight = true;
+  try {
+    const playersSnap = await db.collection(`werewolf_sessions/${sessionId}/players`).get();
+    const players = [];
+    playersSnap.forEach(d => players.push({ id: d.id, ...d.data() }));
+    await checkAndApplyWinner(sessionId, players);
+    await db.collection('werewolf_sessions').doc(sessionId)
+      .update({ pendingWinRecheck: firebase.firestore.FieldValue.delete() });
+  } finally {
+    winRecheckInFlight = false;
+  }
 }
