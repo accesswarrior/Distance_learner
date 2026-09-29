@@ -1,4 +1,5 @@
 // js/main.js
+// Boot + top-level routing.
 
 function showScreen(screenId) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -9,10 +10,6 @@ function showScreen(screenId) {
 let currentUsername = null;
 let currentDisplayName = null;
 
-// Sends someone into a room at the correct screen for its current phase —
-// lobby if it hasn't started, the live game screen (with their existing
-// role, if any) if it has. Used both for a fresh "Join Room" and for
-// resuming a session after login.
 async function enterRoom(sessionId, uid, isMod) {
   const sessionDoc = await db.collection('werewolf_sessions').doc(sessionId).get();
   if (!sessionDoc.exists) {
@@ -26,18 +23,45 @@ async function enterRoom(sessionId, uid, isMod) {
     showScreen('lobby-screen');
     return;
   }
-
-  let myRole = null;
-  if (!isMod) {
-    const playerDoc = await db.collection(`werewolf_sessions/${sessionId}/players`).doc(uid).get();
-    myRole = playerDoc.exists ? (playerDoc.data().role || null) : null;
+  if (sessionData.status === 'starting') {
+    if (isMod) {
+      try {
+        await recoverStartingGame(sessionId);
+        const refreshed = await db.collection('werewolf_sessions').doc(sessionId).get();
+        if (refreshed.exists && refreshed.data().status === 'started') {
+          renderGameScreen(sessionId, uid, true);
+          return;
+        }
+      } catch (err) {
+        console.error('Could not recover starting game:', err);
+      }
+    }
+    // Either a regular player caught this narrow in-between window, or the
+    // moderator's own recovery attempt above didn't resolve it (still
+    // mid-batch on another tab, e.g.). Don't just strand them on a static
+    // screen — listen for the session to leave 'starting' and route from
+    // there, same as a moderator's recovery would have.
+    showScreen('loading-screen');
+    const unsub = db.collection('werewolf_sessions').doc(sessionId)
+      .onSnapshot(doc => {
+        if (!doc.exists) { unsub(); showScreen('lobby-choice-screen'); return; }
+        const d = doc.data();
+        if (d.status === 'started') {
+          unsub();
+          renderGameScreen(sessionId, uid, isMod);
+        } else if (d.status === 'lobby') {
+          unsub();
+          renderLobby(sessionId, uid, isMod);
+          showScreen('lobby-screen');
+        }
+        // still 'starting': keep waiting, nothing to do yet.
+      }, err => console.warn('Could not watch starting session:', err));
+    gameUnsubscribers.push(unsub);
+    return;
   }
-  renderGameScreen(sessionId, uid, isMod, myRole); // shows the game screen itself
+  renderGameScreen(sessionId, uid, isMod);
 }
 
-// If this account was in a room when it got logged out (or logs in from a
-// different device), drop it straight back into that room instead of the
-// room-choice screen. Returns true if a resume happened.
 async function tryResumeSession(uid) {
   const userDoc = await db.collection('werewolf_users').doc(uid).get();
   const sessionId = userDoc.exists ? userDoc.data().currentSessionId : null;
@@ -46,7 +70,6 @@ async function tryResumeSession(uid) {
   const sessionRef = db.collection('werewolf_sessions').doc(sessionId);
   const sessionDoc = await sessionRef.get();
 
-  // Room no longer exists — clear the stale pointer and fall back normally.
   if (!sessionDoc.exists) {
     await db.collection('werewolf_users').doc(uid)
       .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
@@ -60,12 +83,14 @@ async function tryResumeSession(uid) {
   if (!isMod) {
     const playerDoc = await sessionRef.collection('players').doc(uid).get();
     if (!playerDoc.exists) {
-      // Was removed from the lobby (or never actually a player) — stale pointer.
+      // Kicked from the lobby (doc deleted). Clear pointer.
       await db.collection('werewolf_users').doc(uid)
         .update({ currentSessionId: firebase.firestore.FieldValue.delete() })
         .catch(() => {});
       return false;
     }
+    // If removed during an active game, the doc still exists — resume as
+    // a spectator. renderGameScreen handles the removed state.
   }
 
   await enterRoom(sessionId, uid, isMod);
@@ -79,22 +104,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (user) {
       const userDoc = await db.collection('werewolf_users').doc(user.uid).get();
       currentUsername = userDoc.exists ? userDoc.data().username : user.email.split('@')[0];
-      currentDisplayName = userDoc.exists ? (userDoc.data().displayName || currentUsername) : currentUsername;
+      currentDisplayName = userDoc.exists
+        ? (userDoc.data().displayName || currentUsername)
+        : currentUsername;
       document.getElementById('welcome-username').textContent = currentDisplayName;
 
       const resumed = await tryResumeSession(user.uid);
-      if (!resumed) {
-        showScreen('lobby-choice-screen');
-      }
+      if (!resumed) showScreen('lobby-choice-screen');
     } else {
       currentUsername = null;
-
-      // Clean up any live Firestore listener from a previous lobby session.
+      // Clean up ALL listeners — game and lobby — before showing auth.
+      if (typeof clearGameListeners === 'function') clearGameListeners();
       if (typeof lobbyUnsubscribe === 'function' && lobbyUnsubscribe) {
         lobbyUnsubscribe();
         lobbyUnsubscribe = null;
       }
-
       showScreen('auth-screen');
     }
   });
@@ -104,7 +128,9 @@ document.addEventListener('DOMContentLoaded', () => {
     errorEl.textContent = "";
     try {
       const uid = auth.currentUser.uid;
-      const code = await createSession(uid, currentUsername, currentDisplayName);
+      const timerValue = document.getElementById('timer-select').value;
+      const discussionTimerMinutes = timerValue ? parseInt(timerValue, 10) : null;
+      const code = await createSession(uid, currentUsername, currentDisplayName, discussionTimerMinutes);
       renderLobby(code, uid, true);
       showScreen('lobby-screen');
     } catch (error) {
@@ -119,15 +145,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const code = codeInput.value.trim().toUpperCase();
     errorEl.textContent = "";
 
-    if (!code) {
-      errorEl.textContent = "Enter a room code.";
-      return;
-    }
+    if (!code) { errorEl.textContent = "Enter a room code."; return; }
 
     try {
       const uid = auth.currentUser.uid;
       const isMod = await joinSession(code, uid, currentUsername, currentDisplayName);
-      await enterRoom(code, uid, isMod); // routes to lobby OR live game screen
+      await enterRoom(code, uid, isMod);
     } catch (error) {
       console.error("Join room error:", error);
       errorEl.textContent = error.message || "Couldn't join room.";
