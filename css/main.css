@@ -1,5 +1,5 @@
 /* ============================================================
-   Werewolf — main stylesheet
+   Shared base stylesheet (all games)
    ============================================================ */
 
 :root {
@@ -141,6 +141,24 @@ button {
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button:active:not(:disabled) { transform: scale(0.98); }
 
+/* <a> elements styled like buttons (navigation links: "All games", hub game cards).
+   `button` rules above don't apply to anchors, so the same sizing is repeated here. */
+.link-btn, .game-link {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  margin: 8px 0;
+  border-radius: var(--radius-pill);
+  font-size: 1rem;
+  text-align: center;
+  text-decoration: none;
+  color: white;
+  transition: background 0.2s, transform 0.1s;
+}
+.link-btn:active, .game-link:active { transform: scale(0.98); }
+.game-link { padding: 14px; font-size: 1.05rem; }
+.game-link.disabled { background: var(--surface-alt); opacity: 0.5; pointer-events: none; }
+
 .primary-btn   { background: var(--accent); color: white; }
 .primary-btn:hover:not(:disabled)   { background: var(--accent-hover); }
 .secondary-btn { background: var(--surface-alt); color: white; }
@@ -187,79 +205,9 @@ button:active:not(:disabled) { transform: scale(0.98); }
   flex-shrink: 0;
 }
 
-/* ---------- Cards / banners ---------- */
-
-.role-card {
-  background: var(--surface-alt);
-  padding: 20px;
-  border-radius: var(--radius-lg);
-  font-size: 1.2rem;
-  margin-bottom: 15px;
-}
-
-.banner {
-  background: var(--surface);
-  border-left: 4px solid var(--accent);
-  padding: 12px 15px;
-  border-radius: var(--radius-sm);
-  margin-bottom: 15px;
-  text-align: left;
-}
-
-.winner-banner {
-  background: var(--accent);
-  border-left: none;
-  text-align: center;
-  font-size: 1.1rem;
-  font-weight: bold;
-}
-
-.suspense-banner {
-  text-align: center;
-  font-size: 1.1rem;
-  animation: pulse 0.6s ease-in-out infinite alternate;
-}
-
-@keyframes pulse {
-  from { opacity: 0.5; transform: scale(0.98); }
-  to   { opacity: 1;   transform: scale(1.03); }
-}
-
-.banner.reveal { animation: revealPop 0.4s ease-out; }
-
-@keyframes revealPop {
-  from { opacity: 0; transform: scale(0.9); }
-  to   { opacity: 1; transform: scale(1); }
-}
-
-.narrator-box {
-  background: var(--surface);
-  border-left: 4px solid var(--gold);
-  padding: 12px 15px;
-  border-radius: var(--radius-sm);
-  margin: 12px 0;
-  text-align: left;
-  font-style: italic;
-  font-size: 0.95rem;
-}
-
-.composition-details {
-  background: var(--surface);
-  border-radius: var(--radius-md);
-  padding: 8px 12px;
-  margin-bottom: 12px;
-  text-align: left;
-}
-.composition-details summary { cursor: pointer; font-size: 0.9rem; }
-.composition-details .player-list { margin: 10px 0 4px; }
-.composition-details .player-list li { padding: 6px 12px; font-size: 0.85rem; }
-
-.vote-btn.selected { background: var(--accent); }
-
-.eliminate-btn, .kick-btn { background: var(--accent-hover); }
-.eliminate-btn:hover, .kick-btn:hover { background: var(--accent-dark); }
-
-.ack-btn { animation: revealPop 0.3s ease-out; }
+/* Lobby "Remove" button (moderator kicks a player before the game starts). */
+.kick-btn { background: var(--accent-hover); }
+.kick-btn:hover { background: var(--accent-dark); }
 
 /* ---------- Modal overlay (consequential moderator actions) ---------- */
 
@@ -292,27 +240,6 @@ button:active:not(:disabled) { transform: scale(0.98); }
 
 .danger-btn { background: var(--accent-dark); color: white; }
 .danger-btn:hover:not(:disabled) { background: #8a1a33; }
-
-/* ---------- Removed-player / spectator ---------- */
-
-.removed-banner {
-  background: var(--surface);
-  border-left: 4px solid var(--text-faint);
-  padding: 12px 15px;
-  border-radius: var(--radius-sm);
-  margin-bottom: 15px;
-  text-align: left;
-}
-
-/* Scoped to .player-list so this beats `.player-list li button`
-   on specificity — an unscoped `.mini-btn` would be overridden. */
-.player-list li button.mini-btn {
-  width: auto;
-  margin: 0;
-  padding: 4px 10px;
-  font-size: 0.75rem;
-  border-radius: var(--radius-sm);
-}
 
 /* ---------- Reduced motion ---------- */
 

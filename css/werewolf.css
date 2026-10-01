@@ -1,0 +1,199 @@
+/* ============================================================
+   Werewolf-specific styles. Loaded after main.css.
+   ============================================================ */
+
+/* ---------- Cards / banners ---------- */
+
+.role-card {
+  background: var(--surface-alt);
+  padding: 20px;
+  border-radius: var(--radius-lg);
+  font-size: 1.2rem;
+  margin-bottom: 15px;
+}
+
+.banner {
+  background: var(--surface);
+  border-left: 4px solid var(--accent);
+  padding: 12px 15px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 15px;
+  text-align: left;
+}
+
+.winner-banner {
+  background: var(--accent);
+  border-left: none;
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: bold;
+}
+
+.suspense-banner {
+  text-align: center;
+  font-size: 1.1rem;
+  animation: pulse 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  from { opacity: 0.5; transform: scale(0.98); }
+  to   { opacity: 1;   transform: scale(1.03); }
+}
+
+.banner.reveal { animation: revealPop 0.4s ease-out; }
+
+@keyframes revealPop {
+  from { opacity: 0; transform: scale(0.9); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.narrator-box {
+  background: var(--surface);
+  border-left: 4px solid var(--gold);
+  padding: 12px 15px;
+  border-radius: var(--radius-sm);
+  margin: 12px 0;
+  text-align: left;
+  font-style: italic;
+  font-size: 0.95rem;
+}
+
+.composition-details {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+.composition-details summary { cursor: pointer; font-size: 0.9rem; }
+.composition-details .player-list { margin: 10px 0 4px; }
+.composition-details .player-list li { padding: 6px 12px; font-size: 0.85rem; }
+
+.vote-btn.selected { background: var(--accent); }
+
+.eliminate-btn { background: var(--accent-hover); }
+.eliminate-btn:hover { background: var(--accent-dark); }
+
+.ack-btn { animation: revealPop 0.3s ease-out; }
+
+/* ---------- Role card: reveal flip + succession glow ---------- */
+
+.role-container { perspective: 800px; }
+
+.role-card.flip-in {
+  animation: roleFlipIn 0.5s ease-out;
+  transform-style: preserve-3d;
+}
+
+@keyframes roleFlipIn {
+  from { opacity: 0; transform: rotateY(-90deg); }
+  to   { opacity: 1; transform: rotateY(0deg); }
+}
+
+.role-card.succession-glow {
+  animation: successionGlow 1.8s ease-out;
+}
+
+@keyframes successionGlow {
+  0%   { box-shadow: 0 0 0 0 rgba(245, 196, 81, 0); }
+  25%  { box-shadow: 0 0 18px 4px rgba(245, 196, 81, 0.9); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 196, 81, 0); }
+}
+
+/* ---------- Waiting states: gentle breathing, no layout shift ---------- */
+
+.waiting-text {
+  animation: breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  from { opacity: 0.55; }
+  to   { opacity: 1; }
+}
+
+/* ---------- Night / day phase transition flash ---------- */
+
+.phase-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 4rem;
+  opacity: 0;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(15, 15, 26, 0.55) 0%, rgba(15, 15, 26, 0) 70%);
+  transition: opacity 0.5s ease;
+}
+
+.phase-overlay.visible { opacity: 1; }
+
+.timer-display {
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: bold;
+  margin: 8px 0;
+  color: var(--accent, #e94560);
+}
+
+.auth-form select,
+select#timer-select {
+  width: 100%;
+  padding: 12px;
+  margin: 8px 0;
+  border-radius: 25px;
+  border: none;
+  background: #0f3460;
+  color: white;
+  font-size: 1rem;
+  text-align: center;
+}
+
+/* ---------- How to Play ---------- */
+
+.how-to-play-btn {
+  width: auto;
+  padding: 8px 16px;
+  margin: 6px auto 12px;
+  font-size: 0.85rem;
+  background: transparent;
+  border: 1px solid var(--surface-alt);
+  color: var(--text-dim);
+}
+.how-to-play-btn:hover:not(:disabled) { background: var(--surface-alt); color: var(--text); }
+
+.modal-card.large {
+  max-width: 420px;
+  max-height: 80vh;
+  overflow-y: auto;
+  text-align: left;
+}
+.modal-card.large h3 { text-align: center; }
+.modal-card.large h4 { margin: 16px 0 6px; font-size: 0.95rem; color: var(--gold); }
+.modal-card.large p  { margin-bottom: 10px; }
+.modal-card.large .player-list { margin: 4px 0 14px; }
+.modal-card.large .player-list li { padding: 6px 12px; font-size: 0.85rem; }
+.modal-card.large .narrator-box  { margin: 14px 0; font-size: 0.85rem; }
+.modal-card.large .how-to-play-close { margin-top: 4px; }
+
+/* ---------- Removed-player / spectator ---------- */
+
+.removed-banner {
+  background: var(--surface);
+  border-left: 4px solid var(--text-faint);
+  padding: 12px 15px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 15px;
+  text-align: left;
+}
+
+/* Scoped to .player-list so this beats `.player-list li button`
+   on specificity — an unscoped `.mini-btn` would be overridden. */
+.player-list li button.mini-btn {
+  width: auto;
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  border-radius: var(--radius-sm);
+}
