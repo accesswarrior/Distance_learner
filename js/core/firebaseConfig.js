@@ -1,7 +1,8 @@
 // js/core/firebaseConfig.js
 // Reuses the existing access-warrior-1d789 Firebase project.
-// All Werewolf data is namespaced under "werewolf_" prefixed collections
-// so it never collides with any other app sharing this project.
+// Game data is namespaced under per-game prefixed collections ("werewolf_...")
+// so it never collides with any other app sharing this project. The account
+// collections keep the legacy "werewolf_" names but serve every game (README).
 
 const firebaseConfig = {
   apiKey: "AIzaSyBwJzpnmSV845YrDDZYOVntL6sfFAVGaag",
