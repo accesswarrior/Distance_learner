@@ -1,4 +1,4 @@
-// firestore.rules — Werewolf-specific section
+// firestore.rules — Werewolf + Spyfall sections (account rules are shared by both)
 //
 // IMPORTANT: this project (access-warrior-1d789) is shared with the
 // ELTP Quiz Hub. Do NOT deploy this file as-is if the Quiz Hub already
@@ -52,6 +52,13 @@ service cloud.firestore {
         && myPlayerData(sessionId).alive != false;
     }
 
+    // True for anyone currently on the werewolf side (Chief or ordinary),
+    // alive and active. Used ONLY to gate the /secrets/werewolfTeam doc —
+    // it never grants any visibility into other players' documents.
+    function amAliveWerewolfSide(sessionId) {
+      return amAliveRole(sessionId, 'werewolf') || amAliveRole(sessionId, 'chief_werewolf');
+    }
+
     function isPendingHunterShot(sessionId) {
       return sessionData(sessionId).get('pendingHunterShot', '') == request.auth.uid;
     }
@@ -88,11 +95,21 @@ service cloud.firestore {
       allow create: if signedIn();
     }
 
+    // The platform-wide account document (one per player, shared by every game;
+    // the "werewolf_" name is legacy — see README).
+    //   currentSessions : { werewolf: 'ABCDE', ... } — one "which room am I in"
+    //                     pointer per game. Updated with dotted paths
+    //                     (currentSessions.werewolf), which Firestore reports as
+    //                     a change to the top-level key `currentSessions`.
+    //   currentSessionId: the pre-multi-game pointer. It always meant Werewolf and
+    //                     is still written alongside currentSessions.werewolf so the
+    //                     earlier deployment keeps working against the same data.
+    //                     Remove it from this list once that deployment is retired.
     match /werewolf_users/{uid} {
       allow read: if signedIn();
       allow create: if signedIn() && request.auth.uid == uid;
       allow update: if signedIn() && request.auth.uid == uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentSessionId', 'displayName']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentSessionId', 'currentSessions', 'displayName']);
     }
 
     // ---------- Sessions ----------
@@ -101,11 +118,26 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if signedIn();
 
+      // Field-by-field, who may update the session doc and with what:
+      //  1. Moderator — anything.
+      //  2. The pending Hunter, while their shot is active — clearing
+      //     pendingHunterShot, setting the announcement / deathSeen, and
+      //     raising pendingWinRecheck. A Hunter can't see anyone's role, so
+      //     they can't decide succession or the winner themselves; they
+      //     raise the flag and the moderator's client runs the real check
+      //     (voting.js applyPendingWinRecheck). Deliberately NOT allowed:
+      //     writing `winner` or naming a Chief successor.
+      //  3. Any active participant, day phase only — appending their own
+      //     id to deathSeen (the reveal-acknowledgment gate).
+      //  4. The alive Witch — appending exactly one entry to
+      //     pendingPotionFlags (her own potion-used flag goes through the
+      //     moderator this way, since she can't write her own player doc
+      //     beyond `ready`).
       allow update: if signedIn() && (
         isModerator(sessionId)
         || (isPendingHunterShot(sessionId)
             && request.resource.data.diff(resource.data)
-                 .affectedKeys().hasOnly(['pendingHunterShot', 'announcement', 'deathSeen']))
+                 .affectedKeys().hasOnly(['pendingHunterShot', 'announcement', 'deathSeen', 'pendingWinRecheck']))
         || (isActiveParticipant(sessionId)
             && resource.data.get('phase', '') == 'day'
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deathSeen'])
@@ -119,13 +151,52 @@ service cloud.firestore {
             && request.resource.data.pendingPotionFlags.size() == potionFlagList(sessionId).size() + 1)
       );
 
-      // ---- players ----
+      // ---- roster: the PUBLIC, safe-for-anyone projection ----
+      //
+      // Contains only what every player is fine seeing about every other
+      // player: their display name and whether they're alive/removed.
+      // NEVER contains role, potion flags, or hunterShotUsed — that
+      // sensitive state lives only in /players below. Every player's
+      // "who's in this game" list, vote-target list, and night-target list
+      // are built from THIS collection, not /players. (Rules are not
+      // filters: a collection query on /players from a regular player is
+      // rejected outright, so a regular player only ever reads their own
+      // players/{uid} document directly.)
+      match /roster/{playerId} {
+        allow read: if signedIn();
+        // Note: unlike /players' create rule, this doesn't need to block
+        // any field — joinSession() sets participationStatus:'active' and
+        // alive:true here at creation, both expected/harmless starting
+        // values. The real protection is the UPDATE rule below: outside of
+        // the moderator, the only other writes it permits are the owner's
+        // own `ready` toggle and the pending Hunter's narrow `alive: false`
+        // on someone else — neither of which can touch participationStatus.
+        allow create: if signedIn() && request.auth.uid == playerId
+          && request.resource.data.get('alive', true) == true;
+        // Mirrors the players/{playerId} update rule's shape: owner writes
+        // `ready`; moderator writes anything; the pending Hunter may flip
+        // someone ELSE's `alive` to false here too, so the public roster
+        // doesn't drift out of sync with the private record when a
+        // Hunter's own client (not the moderator) resolves their shot.
+        allow update: if signedIn() && (
+          isModerator(sessionId)
+          || (request.auth.uid == playerId
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready']))
+          || (isPendingHunterShot(sessionId)
+              && request.auth.uid != playerId
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['alive'])
+              && request.resource.data.alive == false)
+        );
+        allow delete: if signedIn() && isModerator(sessionId);
+      }
+
+      // ---- players: the PRIVATE, sensitive record ----
 
       match /players/{playerId} {
         allow read: if signedIn() && (
           request.auth.uid == playerId
           || isModerator(sessionId)
-          || amAliveRole(sessionId, 'seer')
+          || (amAliveRole(sessionId, 'seer') && playerId != request.auth.uid)
         );
 
         allow create: if signedIn() && request.auth.uid == playerId
@@ -147,7 +218,10 @@ service cloud.firestore {
         //           would be self-revival).
         //       (b) another player's doc: may only set alive to false.
         //           Cannot touch their role, participation, or anything
-        //           else.
+        //           else. Any Chief succession the shot makes necessary is
+        //           decided by the moderator's client afterwards (via the
+        //           session's pendingWinRecheck flag) — a Hunter's client
+        //           never writes `role` on anyone's player doc.
         allow update: if signedIn() && (
           isModerator(sessionId)
           || (request.auth.uid == playerId
@@ -166,6 +240,21 @@ service cloud.firestore {
         allow delete: if signedIn() && isModerator(sessionId);
       }
 
+      // ---- secrets: narrow, purpose-built cross-player reads ----
+      //
+      // werewolfTeam: { ids: [uid, ...] } — the full werewolf-side roster
+      // (Chief + ordinary Werewolves), written once at role assignment.
+      // Lets the Chief's (and any Werewolf's) own client exclude teammates
+      // from a kill-target list, without ever exposing anyone's role to
+      // anyone outside the werewolf side. A villager who tries to read
+      // this gets a flat permission-denied — Firestore doesn't partially
+      // redact documents, so this has to be its own doc, not a field on
+      // something already public.
+      match /secrets/{doc} {
+        allow read: if signedIn() && (isModerator(sessionId) || amAliveWerewolfSide(sessionId));
+        allow write: if signedIn() && isModerator(sessionId);
+      }
+
       // ---- votes ----
 
       match /votes/{voterId} {
@@ -182,14 +271,154 @@ service cloud.firestore {
 
       // ---- night actions ----
 
+      // True if targetId is one of the werewolf-side player ids. Used ONLY
+      // to reject a Chief's kill target that lands on their own team — the
+      // real guarantee behind the client's "never show teammates" filter
+      // in ui.js, which fails closed but is still just a UI convenience on
+      // its own.
+      function targetIsWerewolfSide(sessionId, targetId) {
+        return get(/databases/$(database)/documents/werewolf_sessions/$(sessionId)/secrets/werewolfTeam)
+          .data.get('ids', []).hasAny([targetId]);
+      }
+
       match /nightActions/{role} {
         allow read: if signedIn() && (
           isModerator(sessionId)
           || amAliveRole(sessionId, role)
           || (role == 'chief_werewolf' && amAliveRole(sessionId, 'witch'))
         );
-        allow create, update: if signedIn() && amAliveRole(sessionId, role);
+        allow create, update: if signedIn()
+          && amAliveRole(sessionId, role)
+          && sessionData(sessionId).get('phase', '') == 'night'
+          && sessionData(sessionId).get('nightStep', '') == role
+          && (role != 'chief_werewolf'
+              || !('targetId' in request.resource.data)
+              || !targetIsWerewolfSide(sessionId, request.resource.data.targetId));
         allow delete: if signedIn() && isModerator(sessionId);
+      }
+    }
+
+    // ===================================================================
+    // Spyfall
+    // ===================================================================
+    //
+    // Same trust model as Werewolf. The OPERATOR — the player running the
+    // current round, who sits it out — is trusted: they can write anything in
+    // the session and are the ONLY one who can read the round's secret
+    // (location + spy). The operator changes every round, so every rule reads
+    // operatorId from the session rather than assuming a fixed moderator.
+    //
+    // Everyone else can only write a few small "queue" facts, which the
+    // operator's client reads and applies:
+    //   - a participant: "I've seen my card"   (session.seenCardUids)
+    //   - a participant: "please call a vote"  (session.voteRequestedBy)
+    //   - a participant: their ballot          (votes/{uid})
+    //   - the caught spy: their guess          (session.spyGuess)
+    // The spy never marks their own guess right or wrong — they can't read the
+    // secret, and the rules would let them forge the result if they could write it.
+
+    function spyfallSession(sessionId) {
+      return get(/databases/$(database)/documents/spyfall_sessions/$(sessionId)).data;
+    }
+
+    function isSpyfallOperator(sessionId) {
+      return spyfallSession(sessionId).operatorId == request.auth.uid;
+    }
+
+    // Is `uid` taking part in the current round? (The operator never is.)
+    function inSpyfallRound(sessionId, uid) {
+      return exists(/databases/$(database)/documents/spyfall_sessions/$(sessionId)/players/$(uid))
+        && get(/databases/$(database)/documents/spyfall_sessions/$(sessionId)/players/$(uid))
+             .data.get('inCurrentRound', false) == true;
+    }
+
+    function isSpyfallCurrentSpy(sessionId) {
+      return exists(/databases/$(database)/documents/spyfall_sessions/$(sessionId)/privatePlayers/$(request.auth.uid))
+        && get(/databases/$(database)/documents/spyfall_sessions/$(sessionId)/privatePlayers/$(request.auth.uid))
+             .data.get('role', '') == 'spy';
+    }
+
+    match /spyfall_sessions/{sessionId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.operatorId == request.auth.uid
+        && request.resource.data.status == 'lobby';
+
+      allow update: if signedIn() && (
+        isSpyfallOperator(sessionId)
+
+        // A participant acknowledging they've seen their card: append exactly
+        // their own uid, nothing else.
+        || (inSpyfallRound(sessionId, request.auth.uid)
+            && resource.data.roundState == 'dealing'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenCardUids'])
+            && request.resource.data.seenCardUids.hasAll(resource.data.get('seenCardUids', []))
+            && request.resource.data.seenCardUids.hasAny([request.auth.uid])
+            && request.resource.data.seenCardUids.size() == resource.data.get('seenCardUids', []).size() + 1)
+
+        // A participant asking for a vote. The operator opens it and sets the
+        // clock, so a player can't choose the deadline.
+        || (inSpyfallRound(sessionId, request.auth.uid)
+            && resource.data.roundState == 'discussing'
+            && !('voteRequestedBy' in resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['voteRequestedBy'])
+            && request.resource.data.voteRequestedBy == request.auth.uid)
+
+        // The caught spy submitting a guess (once). The operator checks it.
+        || (isSpyfallCurrentSpy(sessionId)
+            && resource.data.roundState == 'guess'
+            && !('spyGuess' in resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['spyGuess'])
+            && request.resource.data.spyGuess is string
+            && request.resource.data.spyGuess.size() <= 60)
+      );
+
+      match /players/{playerId} {
+        allow read: if signedIn();
+        // Joining: only in the lobby, only as yourself, and you can't give
+        // yourself a head-start score.
+        allow create: if signedIn() && request.auth.uid == playerId
+          && spyfallSession(sessionId).status == 'lobby'
+          && request.resource.data.keys().hasOnly(['displayName', 'ready', 'score', 'active', 'inCurrentRound', 'joinedAt'])
+          && request.resource.data.score == 0
+          && request.resource.data.active == true;
+        allow update: if signedIn() && (
+          isSpyfallOperator(sessionId)
+          || (request.auth.uid == playerId
+              && spyfallSession(sessionId).status == 'lobby'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready']))
+        );
+        allow delete: if signedIn() && isSpyfallOperator(sessionId);
+      }
+
+      // Each player's own card. The operator can read all (they dealt them).
+      match /privatePlayers/{playerId} {
+        allow read: if signedIn() && (request.auth.uid == playerId || isSpyfallOperator(sessionId));
+        allow write: if signedIn() && isSpyfallOperator(sessionId);
+      }
+
+      // The round's truth (location + spy). Operator only.
+      match /secrets/{doc} {
+        allow read, write: if signedIn() && isSpyfallOperator(sessionId);
+      }
+
+      // Secret ballots: you can see only your own; the operator counts them.
+      match /votes/{voterId} {
+        allow read: if signedIn() && (request.auth.uid == voterId || isSpyfallOperator(sessionId));
+        allow create, update: if signedIn() && request.auth.uid == voterId
+          && spyfallSession(sessionId).roundState == 'voting'
+          && inSpyfallRound(sessionId, request.auth.uid)
+          && request.resource.data.keys().hasOnly(['targetId', 'updatedAt'])
+          && request.resource.data.targetId is string
+          && request.resource.data.targetId != request.auth.uid
+          && inSpyfallRound(sessionId, request.resource.data.targetId);
+        allow delete: if signedIn() && (request.auth.uid == voterId || isSpyfallOperator(sessionId));
+      }
+
+      // Finished rounds (reveal + points). Written once, at scoring, by the operator.
+      match /rounds/{roundNum} {
+        allow read: if signedIn();
+        allow write: if signedIn() && isSpyfallOperator(sessionId);
       }
     }
 
