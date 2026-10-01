@@ -1,4 +1,4 @@
-// js/games/werewolf/narrator.js
+// js/werewolf/narrator.js
 // Moderator-facing "what to say and do right now." Pure read of state.
 
 const ROLE_DESCRIPTIONS = {

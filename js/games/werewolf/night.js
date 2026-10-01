@@ -1,4 +1,4 @@
-// js/games/werewolf/night.js
+// js/werewolf/night.js
 // Sequenced private night actions, coordinated by the moderator.
 //
 // Key invariants:

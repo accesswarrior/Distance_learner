@@ -1,4 +1,4 @@
-// js/games/werewolf/voting.js
+// js/werewolf/voting.js
 // In-app day-phase voting, manual moderator override, win-condition
 // resolution, and the Hunter's last shot.
 //

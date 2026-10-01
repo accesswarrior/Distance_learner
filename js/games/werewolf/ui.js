@@ -1,4 +1,4 @@
-// js/games/werewolf/ui.js
+// js/werewolf/ui.js
 // Renders everything after Start Game: role reveal, moderator controls,
 // voting, night actions, reveals, and the win screen.
 //
@@ -25,10 +25,6 @@ function clearGameListeners() {
   gameUnsubscribers.forEach(u => u());
   gameUnsubscribers = [];
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-}
-
-function shownName(p) {
-  return esc(p ? (p.displayName || p.username || 'Unknown') : 'Unknown');
 }
 
 // Which announcement types represent a "reveal" that the room should
@@ -492,7 +488,8 @@ function renderGameScreen(sessionId, playerId, isMod) {
       // moderator has no roster/player doc — nothing extra to show here
     }
 
-    html += `<button class="logout-btn secondary-btn">Logout</button>`;
+    html += `<a class="link-btn secondary-btn" href="../hub.html">← All games</a>`;
+    html += `<button class="logout-btn secondary-btn">Log out</button>`;
     // Every render rebuilds the DOM from scratch; remember which <details>
     // panels were open so a redraw doesn't snap them shut under the user.
     const openDetails = Array.from(roleContent.querySelectorAll('details')).map(d => d.open);
