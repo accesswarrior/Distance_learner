@@ -1,186 +1,118 @@
-// js/werewolf/lobby.js
-// Waiting room. Only in play while session.status === 'lobby'.
-//
-// Listens to the PUBLIC /roster collection, not /players. A regular
-// player reads their private players/{uid} document separately; an
-// unfiltered /players collection query is not permitted by the private
-// document rules. /roster is safe for everyone to read in full,
-// since it never contains role or potion/hunter state. See engine.js's
-// header comment for the full schema split.
+// js/spyfall/lobby.js
+// The waiting room: players join and ready up, the operator starts.
+// Listens to the SESSION as well as the players, so when the operator
+// presses Start every phone moves into the game on its own.
 
-let currentSessionId = null;
-let currentPlayerId = null;
-let isModerator = false;
-let lobbyUnsubscribe = null;
-let lobbyUnsubscribe_ownRole = null;
+let spyfallLobbyUnsubs = [];
 
-const READY_THRESHOLD = 8;
+function clearSpyfallLobbyListeners() {
+  spyfallLobbyUnsubs.forEach(u => u());
+  spyfallLobbyUnsubs = [];
+}
 
-function renderLobby(sessionId, playerId, isMod) {
-  currentSessionId = sessionId;
-  currentPlayerId = playerId;
-  isModerator = isMod;
+function renderSpyfallLobby(sessionId, uid) {
+  clearSpyfallLobbyListeners();
+  showScreen('lobby-screen');
 
-  if (!isMod) {
-    db.collection(`werewolf_sessions/${sessionId}/players`).doc(playerId).get().then(doc => {
-      if (!doc.exists) {
-        clearCurrentSession(playerId, 'werewolf').catch(() => {});
-        showScreen('lobby-choice-screen');
-      }
-    }).catch(() => {});
-  }
-
-  const lobbyContent = document.getElementById('lobby-content');
-  lobbyContent.innerHTML = `
-    <h2>Game Lobby</h2>
-    <p>Room Code: <strong id="room-code-display">${esc(sessionId)}</strong></p>
-    <p id="player-count-display">0 players in room</p>
-    <ul class="player-list" id="player-list"></ul>
-    ${isModerator
-      ? `<button id="start-btn" disabled>Start Game (need ${READY_THRESHOLD}+ ready)</button>`
-      : `<button id="ready-btn">Ready</button>`}
-    <button class="how-to-play-btn">❓ How to Play</button>
+  const el = document.getElementById('lobby-content');
+  el.innerHTML = `
+    <h2>Spyfall Lobby</h2>
+    <p>Room Code: <strong id="spyfall-code">${esc(sessionId)}</strong></p>
+    <p id="spyfall-count">0 players</p>
+    <ul class="player-list" id="spyfall-player-list"></ul>
+    <p class="hint-text" id="spyfall-lobby-hint"></p>
+    <button id="spyfall-ready-btn" class="secondary-btn">Ready</button>
+    <button id="spyfall-start-btn" class="primary-btn" style="display:none;">Start Session</button>
+    <p id="spyfall-lobby-error" class="error-message"></p>
     <a class="link-btn secondary-btn" href="../hub.html">← All games</a>
     <button class="logout-btn secondary-btn">Log out</button>
   `;
 
-  // renderLobby runs again every time this session returns to the lobby —
-  // not just on first join, but on every "Play Again" rematch too — so
-  // both listeners from any PREVIOUS call must be torn down here, not just
-  // the roster one. Leaving lobbyUnsubscribe_ownRole running would stack
-  // one more live snapshot subscription per phone on every rematch.
-  if (lobbyUnsubscribe) { lobbyUnsubscribe(); lobbyUnsubscribe = null; }
-  if (lobbyUnsubscribe_ownRole) { lobbyUnsubscribe_ownRole(); lobbyUnsubscribe_ownRole = null; }
+  let session = {};
+  let players = [];
 
-  if (isModerator) {
-    document.getElementById('player-list').addEventListener('click', (e) => {
-      if (e.target.classList.contains('kick-btn')) {
-        kickPlayer(currentSessionId, e.target.dataset.uid);
-      }
-    });
+  function update() {
+    const list = document.getElementById('spyfall-player-list');
+    if (!list) return;
+    const isOperator = session.operatorId === uid;
+    const others = players.filter(p => p.id !== session.operatorId);
+    const readyCount = others.filter(p => p.ready).length;
+
+    list.innerHTML = players.map(p => {
+      const tag = p.id === session.operatorId ? ' (operator)' : '';
+      const ready = p.id !== session.operatorId && p.ready ? ' ✔️' : '';
+      return `<li><span>${esc(p.displayName || 'Player')}${tag}${ready}${p.id === uid ? ' — you' : ''}</span></li>`;
+    }).join('');
+    document.getElementById('spyfall-count').textContent =
+      `${players.length} player${players.length === 1 ? '' : 's'}`;
+
+    const readyBtn = document.getElementById('spyfall-ready-btn');
+    const startBtn = document.getElementById('spyfall-start-btn');
+    const hint = document.getElementById('spyfall-lobby-hint');
+    if (isOperator) {
+      readyBtn.style.display = 'none';
+      startBtn.style.display = 'block';
+      const enough = others.length >= SPYFALL_MIN_PARTICIPANTS && readyCount === others.length;
+      startBtn.disabled = !enough;
+      startBtn.textContent = `Start Session (${readyCount}/${others.length} ready)`;
+      hint.textContent = `You run round 1 and sit it out. Need ${SPYFALL_MIN_PARTICIPANTS}+ other players, all ready.`;
+    } else {
+      readyBtn.style.display = 'block';
+      startBtn.style.display = 'none';
+      const mine = players.find(p => p.id === uid);
+      readyBtn.textContent = (mine && mine.ready) ? 'Not Ready' : 'Ready';
+      hint.textContent = 'Waiting for the operator to start.';
+    }
   }
 
-  // Guard against a spurious "you were removed" if the very first snapshot
-  // arrives before our own join write has echoed locally — we only treat a
-  // missing self as a genuine removal AFTER we've seen ourselves at least
-  // once. The moderator has no player doc, so this branch never fires for
-  // them.
-  let sawMyself = false;
-
-  lobbyUnsubscribe = db.collection(`werewolf_sessions/${sessionId}/roster`)
-    .onSnapshot(snapshot => {
-      const playerList = document.getElementById('player-list');
-      if (!playerList) return;
-
-      const selfPresent = snapshot.docs.some(doc => doc.id === currentPlayerId);
-      if (selfPresent) sawMyself = true;
-
-      if (!isModerator && sawMyself && !selfPresent) {
-        handleRemovedFromLobby();
+  spyfallLobbyUnsubs.push(
+    db.collection('spyfall_sessions').doc(sessionId).onSnapshot(doc => {
+      if (!doc.exists) {
+        clearSpyfallLobbyListeners();
+        clearCurrentSession(uid, 'spyfall').catch(() => {});
+        showScreen('lobby-choice-screen');
         return;
       }
-
-      playerList.innerHTML = '';
-      let readyCount = 0;
-
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        const li = document.createElement('li');
-        const canKick = isModerator && doc.id !== currentPlayerId;
-        const shown = data.displayName || data.username;
-        li.innerHTML = `<span>${esc(shown)} ${data.ready ? '✔️' : ''}</span>` +
-          (canKick ? `<button class="kick-btn secondary-btn" data-uid="${doc.id}">Remove</button>` : '');
-        playerList.appendChild(li);
-        if (data.ready) readyCount++;
-      });
-
-      const total = snapshot.size;
-      const countDisplay = document.getElementById('player-count-display');
-      if (countDisplay) {
-        countDisplay.textContent =
-          `${total} player${total === 1 ? '' : 's'} in room (${readyCount} ready)`;
+      session = doc.data() || {};
+      if (session.status === 'playing') {
+        renderSpyfallGame(sessionId, uid);   // ui.js — also clears these lobby listeners
+        return;
       }
+      update();
+    })
+  );
 
-      const startBtn = document.getElementById('start-btn');
-      if (isModerator && startBtn) {
-        startBtn.disabled = readyCount < READY_THRESHOLD;
-      }
-    });
+  spyfallLobbyUnsubs.push(
+    db.collection(`spyfall_sessions/${sessionId}/players`).onSnapshot(snap => {
+      players = [];
+      snap.forEach(d => players.push({ id: d.id, ...d.data() }));
+      players.sort((a, b) => spyfallJoinedAtMillis(a) - spyfallJoinedAtMillis(b) || a.id.localeCompare(b.id));
+      update();
+    })
+  );
 
-  // Roles are assigned on the PRIVATE /players doc, which a regular
-  // player can read only their own copy of — so their own doc's onSnapshot
-  // (not the roster listener above) is what notices a role has landed and
-  // moves them from the lobby to the game screen.
-  if (!isModerator) {
-    lobbyUnsubscribe_ownRole = db.collection(`werewolf_sessions/${sessionId}/players`).doc(playerId)
-      .onSnapshot(doc => {
-        const data = doc.data();
-        const onLobbyScreen = document.getElementById('lobby-screen').classList.contains('active');
-        if (data && data.role && onLobbyScreen) {
-          renderGameScreen(sessionId, playerId, false);
-        }
-      });
-  }
-
-  if (isModerator) {
-    document.getElementById('start-btn').addEventListener('click', startGame);
-  } else {
-    document.getElementById('ready-btn').addEventListener('click', toggleReady);
-  }
-}
-
-async function handleRemovedFromLobby() {
-  if (lobbyUnsubscribe) { lobbyUnsubscribe(); lobbyUnsubscribe = null; }
-  if (lobbyUnsubscribe_ownRole) { lobbyUnsubscribe_ownRole(); lobbyUnsubscribe_ownRole = null; }
-  await clearCurrentSession(currentPlayerId, 'werewolf').catch(() => {});
-  alert("You're no longer in this room — either the moderator removed you, or the game started without you because you weren't marked Ready.");
-  showScreen('lobby-choice-screen');
-}
-
-async function toggleReady() {
-  const playerRef = db.collection(`werewolf_sessions/${currentSessionId}/players`).doc(currentPlayerId);
-  const rosterRef = db.collection(`werewolf_sessions/${currentSessionId}/roster`).doc(currentPlayerId);
-  const doc = await playerRef.get();
-  if (!doc.exists) {
-    await clearCurrentSession(currentPlayerId, 'werewolf').catch(() => {});
-    showScreen('lobby-choice-screen');
-    return;
-  }
-  const data = doc.data() || {};
-  if (data.participationStatus === 'removed') {
-    showScreen('lobby-choice-screen');
-    return;
-  }
-  const newReady = !(data.ready || false);
-  const batch = db.batch();
-  batch.update(playerRef, { ready: newReady });
-  batch.set(rosterRef, { ready: newReady }, { merge: true });
-  await batch.commit();
-}
-
-async function startGame() {
-  const ok = await confirmAction({
-    title: 'Start the game?',
-    message: 'Only players who have marked themselves Ready will be dealt a role. Everyone else will be removed from the room.',
-    confirmLabel: 'Start Game'
+  document.getElementById('spyfall-ready-btn').addEventListener('click', async () => {
+    const mine = players.find(p => p.id === uid);
+    if (!mine) return;
+    try {
+      await db.collection(`spyfall_sessions/${sessionId}/players`).doc(uid).update({ ready: !mine.ready });
+    } catch (e) { console.warn('Could not toggle ready:', e); }
   });
-  if (!ok) return;
 
-  const sessionRef = db.collection('werewolf_sessions').doc(currentSessionId);
-
-  // Flip status to 'starting' FIRST, in its own write, before reading the
-  // roster inside dealAndStart(). joinSession() refuses to add a new player
-  // once status isn't 'lobby', so this closes the window where someone could
-  // join between "read the roster" and "assign roles" and end up with a
-  // players/{uid} doc that never gets a role. Bundling this flip into the
-  // SAME batch as the role assignment would reopen that exact race.
-  await sessionRef.update({ status: 'starting', pendingPotionFlags: [] });
-
-  const result = await dealAndStart(currentSessionId, currentPlayerId); // engine.js
-  if (!result.ok) {
-    alert(`Need at least ${READY_THRESHOLD} ready players to start.`);
-    return;
-  }
-
-  renderGameScreen(currentSessionId, currentPlayerId, true);
+  document.getElementById('spyfall-start-btn').addEventListener('click', async () => {
+    const errorEl = document.getElementById('spyfall-lobby-error');
+    errorEl.textContent = '';
+    const ok = await confirmAction({
+      title: 'Start the session?',
+      message: 'You will run round 1 and sit it out. The operator rotates every round after that.',
+      confirmLabel: 'Start'
+    });
+    if (!ok) return;
+    try {
+      await startSpyfallSession(sessionId);   // everyone's lobby listener then moves to the game
+    } catch (e) {
+      console.error(e);
+      errorEl.textContent = e.message || "Couldn't start the session.";
+    }
+  });
 }
