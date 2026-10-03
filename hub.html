@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0f0f1a">
+  <title>Classroom Games</title>
+  <link rel="stylesheet" href="css/main.css">
+
+  <!-- Firebase SDK (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
+</head>
+<body data-root="" data-page="hub.html">
+  <div id="app">
+    <div class="screen active" id="loading-screen">
+      <div class="spinner"></div>
+      <p>Loading...</p>
+    </div>
+
+    <!-- Game picker -->
+    <div class="screen" id="hub-screen">
+      <div class="auth-card">
+        <h1 class="game-title">🎮 Classroom Games</h1>
+        <p class="tagline">Welcome, <span id="hub-name"></span> — pick a game</p>
+
+        <a class="game-link primary-btn" href="games/werewolf.html">🐺 Werewolf</a>
+        <a class="game-link primary-btn" href="games/spyfall.html">🕵️ Spyfall</a>
+
+        <!-- Change the name other players see (starts as the Google name for Google sign-ins) -->
+        <p class="toggle-auth-mode"><a href="#" id="edit-name-link">Change display name</a></p>
+        <form id="name-form" class="auth-form" style="display:none;" novalidate>
+          <input type="text" id="name-input" placeholder="Display name" autocomplete="nickname" maxlength="24">
+          <button type="submit" id="name-save-btn" class="primary-btn">Save name</button>
+          <button type="button" id="name-cancel-btn" class="secondary-btn">Cancel</button>
+        </form>
+        <p id="name-error" class="error-message" role="alert"></p>
+
+        <button class="logout-btn secondary-btn">Log out</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Core -->
+  <script src="js/core/firebaseConfig.js"></script>
+  <script src="js/core/auth.js"></script>
+  <script src="js/core/ui-helpers.js"></script>
+  <script src="js/core/hub.js"></script>
+</body>
+</html>

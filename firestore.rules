@@ -1,11 +1,14 @@
-// firestore.rules — Werewolf-specific section
+// firestore.rules — accounts + Werewolf + Spyfall
 //
-// IMPORTANT: this project (access-warrior-1d789) is shared with the
-// ELTP Quiz Hub. Do NOT deploy this file as-is if the Quiz Hub already
-// has its own firestore.rules — that would overwrite its rules.
-// Instead, copy the `match` blocks below (functions included) into the
-// *same* `match /databases/{database}/documents { ... }` block that
-// already contains the Quiz Hub's rules.
+// This project is used only by this platform, so the file can be deployed as
+// it is (Firebase console -> Firestore -> Rules, or `firebase deploy --only
+// firestore:rules`).
+//
+// Collections:
+//   users/{uid}                  one account document per player, shared by every game
+//   werewolf_sessions/{code}     Werewolf rooms
+//   spyfall_sessions/{code}      Spyfall rooms
+// Any new game adds its own `<game>_sessions` section below.
 
 rules_version = '2';
 service cloud.firestore {
@@ -90,16 +93,30 @@ service cloud.firestore {
 
     // ---------- Account data ----------
 
-    match /werewolf_usernames/{username} {
-      allow read: if false;
-      allow create: if signedIn();
+    // The platform-wide account document, one per player, shared by every game:
+    //   displayName     : what other players see (1-24 characters)
+    //   createdAt       : server timestamp
+    //   currentSessions : { werewolf: 'ABCDE', spyfall: 'XYZ12' } — one "which
+    //                     room am I in" pointer per game. Written with dotted
+    //                     paths (currentSessions.werewolf), which Firestore
+    //                     reports as a change to the top-level key
+    //                     `currentSessions`.
+    // The email is NOT stored here — it lives on the Firebase Auth user — and
+    // a player can read only their own document, so nobody can browse other
+    // players' accounts.
+    function validDisplayName(name) {
+      return name is string && name.size() >= 1 && name.size() <= 24;
     }
 
-    match /werewolf_users/{uid} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.auth.uid == uid;
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['displayName', 'createdAt'])
+        && validDisplayName(request.resource.data.displayName);
       allow update: if signedIn() && request.auth.uid == uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentSessionId', 'displayName']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'currentSessions'])
+        && validDisplayName(request.resource.data.displayName);
+      // No delete: accounts are removed from the Firebase console.
     }
 
     // ---------- Sessions ----------
@@ -288,7 +305,129 @@ service cloud.firestore {
       }
     }
 
-    // --- Quiz Hub rules go here too — do not remove them when merging ---
+    // ===================================================================
+    // Spyfall
+    // ===================================================================
+    //
+    // Same trust model as Werewolf. The OPERATOR — the player running the
+    // current round, who sits it out — is trusted: they can write anything in
+    // the session and are the ONLY one who can read the round's secret
+    // (location + spy). The operator changes every round, so every rule reads
+    // operatorId from the session rather than assuming a fixed moderator.
+    //
+    // Everyone else can only write a few small "queue" facts, which the
+    // operator's client reads and applies:
+    //   - a participant: "I've seen my card"   (session.seenCardUids)
+    //   - a participant: "please call a vote"  (session.voteRequestedBy)
+    //   - a participant: their ballot          (votes/{uid})
+    //   - the caught spy: their guess          (session.spyGuess)
+    // The spy never marks their own guess right or wrong — they can't read the
+    // secret, and the rules would let them forge the result if they could write it.
+
+    function spyfallSession(sessionId) {
+      return get(/databases/$(database)/documents/spyfall_sessions/$(sessionId)).data;
+    }
+
+    function isSpyfallOperator(sessionId) {
+      return spyfallSession(sessionId).operatorId == request.auth.uid;
+    }
+
+    // Is `uid` taking part in the current round? (The operator never is.)
+    function inSpyfallRound(sessionId, uid) {
+      return exists(/databases/$(database)/documents/spyfall_sessions/$(sessionId)/players/$(uid))
+        && get(/databases/$(database)/documents/spyfall_sessions/$(sessionId)/players/$(uid))
+             .data.get('inCurrentRound', false) == true;
+    }
+
+    function isSpyfallCurrentSpy(sessionId) {
+      return exists(/databases/$(database)/documents/spyfall_sessions/$(sessionId)/privatePlayers/$(request.auth.uid))
+        && get(/databases/$(database)/documents/spyfall_sessions/$(sessionId)/privatePlayers/$(request.auth.uid))
+             .data.get('role', '') == 'spy';
+    }
+
+    match /spyfall_sessions/{sessionId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.operatorId == request.auth.uid
+        && request.resource.data.status == 'lobby';
+
+      allow update: if signedIn() && (
+        isSpyfallOperator(sessionId)
+
+        // A participant acknowledging they've seen their card: append exactly
+        // their own uid, nothing else.
+        || (inSpyfallRound(sessionId, request.auth.uid)
+            && resource.data.roundState == 'dealing'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenCardUids'])
+            && request.resource.data.seenCardUids.hasAll(resource.data.get('seenCardUids', []))
+            && request.resource.data.seenCardUids.hasAny([request.auth.uid])
+            && request.resource.data.seenCardUids.size() == resource.data.get('seenCardUids', []).size() + 1)
+
+        // A participant asking for a vote. The operator opens it and sets the
+        // clock, so a player can't choose the deadline.
+        || (inSpyfallRound(sessionId, request.auth.uid)
+            && resource.data.roundState == 'discussing'
+            && !('voteRequestedBy' in resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['voteRequestedBy'])
+            && request.resource.data.voteRequestedBy == request.auth.uid)
+
+        // The caught spy submitting a guess (once). The operator checks it.
+        || (isSpyfallCurrentSpy(sessionId)
+            && resource.data.roundState == 'guess'
+            && !('spyGuess' in resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['spyGuess'])
+            && request.resource.data.spyGuess is string
+            && request.resource.data.spyGuess.size() <= 60)
+      );
+
+      match /players/{playerId} {
+        allow read: if signedIn();
+        // Joining: only in the lobby, only as yourself, and you can't give
+        // yourself a head-start score.
+        allow create: if signedIn() && request.auth.uid == playerId
+          && spyfallSession(sessionId).status == 'lobby'
+          && request.resource.data.keys().hasOnly(['displayName', 'ready', 'score', 'active', 'inCurrentRound', 'joinedAt'])
+          && request.resource.data.score == 0
+          && request.resource.data.active == true;
+        allow update: if signedIn() && (
+          isSpyfallOperator(sessionId)
+          || (request.auth.uid == playerId
+              && spyfallSession(sessionId).status == 'lobby'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready']))
+        );
+        allow delete: if signedIn() && isSpyfallOperator(sessionId);
+      }
+
+      // Each player's own card. The operator can read all (they dealt them).
+      match /privatePlayers/{playerId} {
+        allow read: if signedIn() && (request.auth.uid == playerId || isSpyfallOperator(sessionId));
+        allow write: if signedIn() && isSpyfallOperator(sessionId);
+      }
+
+      // The round's truth (location + spy). Operator only.
+      match /secrets/{doc} {
+        allow read, write: if signedIn() && isSpyfallOperator(sessionId);
+      }
+
+      // Secret ballots: you can see only your own; the operator counts them.
+      match /votes/{voterId} {
+        allow read: if signedIn() && (request.auth.uid == voterId || isSpyfallOperator(sessionId));
+        allow create, update: if signedIn() && request.auth.uid == voterId
+          && spyfallSession(sessionId).roundState == 'voting'
+          && inSpyfallRound(sessionId, request.auth.uid)
+          && request.resource.data.keys().hasOnly(['targetId', 'updatedAt'])
+          && request.resource.data.targetId is string
+          && request.resource.data.targetId != request.auth.uid
+          && inSpyfallRound(sessionId, request.resource.data.targetId);
+        allow delete: if signedIn() && (request.auth.uid == voterId || isSpyfallOperator(sessionId));
+      }
+
+      // Finished rounds (reveal + points). Written once, at scoring, by the operator.
+      match /rounds/{roundNum} {
+        allow read: if signedIn();
+        allow write: if signedIn() && isSpyfallOperator(sessionId);
+      }
+    }
 
   }
 }

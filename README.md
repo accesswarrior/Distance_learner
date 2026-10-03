@@ -1,16 +1,45 @@
-# Werewolf — Classroom Game
+# Classroom Games
 
-A web app for running the social-deduction game **Werewolf** in a physical
-classroom. Everyone is in the same room on their own phone; a human
+A small platform of in-person party games, each played on everyone's own
+phone in the same room. **Werewolf** and **Spyfall** are built.
+
+The Werewolf game: a web app for running the social-deduction game in a
+physical classroom. Everyone is in the same room on their own phone; a human
 moderator runs the actual night/day rounds, guided by an on-screen script.
 The app is the private-information layer and the stage manager — it is
 deliberately not the whole game.
 
-## What the app does
+## How a player moves through the site
 
-- Login / signup (username + 6-digit PIN — a classroom convenience, not a
-  strong credential). Username is a private login handle; a separate
-  **display name**, set at signup, is what other players actually see.
+```
+index.html          Log in (email + password, or Google)      ⇄  signup.html  Create an account
+   │  signed in → straight on (or back to the page they were trying to reach)
+   ▼
+hub.html            Pick a game
+   │
+   ▼
+games/werewolf.html  ┐ Create or join a room → lobby → game
+games/spyfall.html   ┘ (each game is its own page)
+   │  "← All games" returns to the hub; "Log out" returns to the login page
+```
+
+Every page except the login and sign-up pages requires a signed-in player and
+redirects to `index.html?next=<this page>` otherwise, so a link to a game page
+works even for someone who isn't logged in yet. The login and sign-up pages link
+to each other and carry `next` across, so it survives a detour through sign-up.
+`next` is only honoured for known same-site pages (`hub.html`,
+`games/<name>.html`).
+
+Leaving a game page does NOT leave the room: the player stays on the roster and
+tapping the game on the hub resumes them where they were (see `currentSessions`
+below).
+
+## What the Werewolf game does
+
+- Accounts: email + password (8+ characters) or **Sign in with Google**, on
+  separate login and sign-up pages. A **display name** — chosen at sign-up, or
+  taken from the Google name and changeable on the hub — is what other players
+  see; the email is never shown to other players.
 - Room creation (with an optional discussion timer) and joining, capped at
   a `READY_THRESHOLD` of 8 ready players to start.
 - Private role assignment — each player sees only their own role; the
@@ -34,33 +63,41 @@ agreeing out loud on a victim — happens in the room, not in the app.
 
 ## Firebase project
 
-This repo reuses the existing **access-warrior-1d789** Firebase project.
-All Firestore collections are prefixed `werewolf_` so it never collides
-with any other app sharing the project.
+This platform has its own Firebase project; nothing else uses it. Put the
+project's web-app config in `js/core/firebaseConfig.js` (until you do, every
+page shows a red "Firebase is not configured yet" bar). Each game's Firestore
+collections are prefixed with the game's name (`werewolf_sessions`,
+`spyfall_sessions`), and accounts are `users/{uid}`.
 
 ### Before you go live
 
-1. Open **Firestore → Rules** in the Firebase console.
-2. `firestore.rules` in this repo is written as a complete, standalone
-   rules file for clarity — but this project's rules may already contain
-   another app's (e.g. the ELTP Quiz Hub's) rules in the same
-   `match /databases/{database}/documents { ... }` block. **Do not simply
-   paste this file over the existing rules** if that's the case — copy the
-   `match` blocks and helper functions from this file into the *same*
-   top-level block that already has the other app's rules, so neither
-   app's rules get clobbered.
-3. Publish, and test with at least two real accounts (one moderator, one
-   player) before trusting it with a class. See "Known limitations" below
-   for what a single-device code review can't catch.
+1. **Authentication → Sign-in method:** enable **Email/Password** and
+   **Google** (Google asks for a support email).
+2. **Authentication → Settings → Authorized domains:** add the domain the site
+   is served from (e.g. `yourname.github.io`). Google sign-in fails with an
+   "unauthorized domain" error until you do. Renaming the repository doesn't
+   change the hostname, so it doesn't affect this.
+3. **Authentication → Templates:** check the password-reset email's sender name
+   and wording — players see it.
+4. **Firestore → Rules:** publish `firestore.rules` from this repo as it is
+   (it is the project's complete rules file). Publish **before** pointing a
+   site at this code.
+5. Test with real accounts before trusting it with a class: at least two for
+   Werewolf (moderator + player), and **four phones for Spyfall** (operator + 3
+   players). The rules were reviewed by hand and run against a model of them,
+   not against the Firestore emulator. See "Known limitations" below for what a
+   single-device code review can't catch.
+6. Test Google sign-in on a real phone, including from a link opened inside
+   another app (chat apps' built-in browsers can block Google sign-in; the
+   code falls back to a full-page redirect where it can).
 
 ## Data model
 
-Two Firebase products: **Auth** (email/password, with the "email" being a
-synthetic `username@werewolf.local`) and **Firestore**.
+Two Firebase products: **Auth** (email/password and Google) and **Firestore**.
 
 ```
-werewolf_usernames/{username}        -> { uid }
-werewolf_users/{uid}                 -> { username, displayName, createdAt, currentSessionId? }
+users/{uid}                          -> { displayName, createdAt,
+                                          currentSessions?: { werewolf?: code, spyfall?: code } }
 
 werewolf_sessions/{sessionId}
   moderatorId, status ('lobby'|'started'), createdAt
@@ -70,17 +107,53 @@ werewolf_sessions/{sessionId}
   discussionTimerMinutes?, discussionTimerEndsAt?, roleComposition?
 
   /players/{uid}   (PRIVATE — see "Two documents per player" below)
-    username, displayName, ready, participationStatus ('active'|'removed')
+    displayName, ready, participationStatus ('active'|'removed')
     role?, alive?, healPotionUsed?, poisonPotionUsed?, hunterShotUsed?
 
   /roster/{uid}    (PUBLIC — see "Two documents per player" below)
-    username, displayName, ready, participationStatus, alive
+    displayName, ready, participationStatus, alive
 
   /secrets/werewolfTeam -> { ids: [uid, ...] }   (werewolf-side only, see below)
 
   /votes/{voterId}         -> { targetId, updatedAt }
   /nightActions/{role}     -> { targetId?, action?, done?, updatedAt }
 ```
+
+### Accounts are platform-wide
+
+`users/{uid}` is the one account document for every game. It holds only the
+display name, the creation time and the room pointers — **not the email**, which
+lives on the Firebase Auth user (`user.email`). The rules let a player read and
+update only their own document, so nobody can browse other players' accounts.
+
+`loadProfile()` (`core/auth.js`) is the single place the document is created if
+it is missing. That is the normal path for a first-time Google sign-in (there is
+no sign-up step) and the recovery path if the write at email sign-up was lost.
+Every game page calls it on load, before touching any room.
+
+**Which room am I in?** is stored per game as `currentSessions.<game>` so being
+in a room for one game never overwrites another's. The helpers are in
+`js/core/auth.js`: `getCurrentSession`, `setCurrentSession`,
+`clearCurrentSession`. A new game passes its own id (`'spyfall'`).
+
+**Email and password.** Sign-up needs a display name, a valid email and a
+password of 8+ characters entered twice. Log-in uses one generic "Incorrect email
+or password" message for both an unknown email and a wrong password, and the
+password-reset form always reports the same result, so neither can be used to
+find out who has an account.
+
+**Google.** `signInWithGoogle()` tries a popup and falls back to a full-page
+redirect if the browser blocks it. Google sign-in is both log-in and sign-up. If
+an email already has a password account, Firebase's "one account per email"
+setting makes Google sign-in fail with a message telling the player to use their
+password; linking the two methods is not built.
+
+### Starting a game: one dealing path
+
+`buildDeal()` (rules.js, pure) decides every role and the werewolf-team list.
+`dealAndStart()` (engine.js) is the only code that reads the ready players and
+writes the result. The Start button (`lobby.js startGame`) and crash recovery
+(`recoverStartingGame`) both call it, so they cannot deal differently.
 
 ### Two documents per player — and why
 
@@ -194,6 +267,105 @@ same "raise a flag, let the moderator's client resolve it" treatment —
 not a broader rule that tries to give the non-moderator client the
 missing information directly.
 
+## Spyfall
+
+Everyone but the spy is told the same secret location; the spy only knows they
+don't know it. People question each other out loud, then vote on who the spy is.
+The room does the playing; the app deals the cards privately, runs the clocks,
+counts the secret ballots and keeps score.
+
+**Who runs it.** There is no fixed moderator. One player at a time is the
+**operator**: they press Deal, their phone runs the round (timers, counting
+votes, scoring), and they **sit that round out** — they don't get a card and
+don't vote. The operator rotates every round through the join order, so everyone
+plays most rounds. Consequence: a room needs **4+ phones** (3 players in a round
+plus the operator), max 10.
+
+### A round
+
+```
+idle ─deal→ dealing ─all seen→ discussing ─vote requested / time up→ voting
+                                                                       │
+                          spy NOT caught ─────────────────────────────┤
+                          spy caught ─→ guess ─spy guesses / time up──┤
+                                                                       ▼
+                                                    scored ─next round→ idle (new operator)
+```
+
+| Step | What happens |
+|---|---|
+| Deal (operator) | Picks a location (not yet used this session) and a spy from the players in the round; writes the secret and each player's private card; clears the previous round's ballots. |
+| Dealing | Each player taps Reveal, reads their card, taps "Got it" (hides it again). When everyone has, the operator's phone starts the 8-minute discussion. Players can re-check their card any time with "Check my card". |
+| Discussing | Any player can ask for a vote; the operator opens it. If the clock runs out the vote opens automatically. |
+| Voting | 45 seconds, secret ballots, change-your-mind allowed. Closes when everyone has voted or time's up. The top vote-getter is accused if there is exactly one (a tie or no votes accuses nobody). |
+| Guess | Only if the spy was accused: they get one pick from the location list (30 s). |
+| Scored | Reveals spy and location to everyone. Points: spy not caught **2**; spy caught but names the location **1**; spy caught and wrong (or too slow) **1 for each agent**. |
+
+### Who can write what (the queue pattern, again)
+
+The **operator's client** is the only one that advances the round, reads the
+secret, counts ballots and awards points. Everyone else writes only tiny facts
+the rules allow, which the operator reads and applies:
+
+| Who | May write | Why not more |
+|---|---|---|
+| A player in the round | `seenCardUids` (append own uid), `voteRequestedBy` (own uid, while discussing), their ballot `votes/{uid}` (while voting, not for self/operator) | They can't set clocks or results. |
+| The caught spy | `spyGuess`, once | The spy can't read the secret, and if they could write "correct" they could forge a win — the operator checks the guess. |
+| The operator | everything in the session | Trusted, as in Werewolf. |
+
+### Data model (all under `spyfall_sessions/{code}`)
+
+```
+(session doc)   operatorId, moderatorId (creator, reference only), status 'lobby'|'playing',
+                currentRound, roundState, playerOrder [uid] (fixed at Start), usedLocations [],
+                seenCardUids [], voteRequestedBy?, voteCallerId?, discussionEndsAt?, votingEndsAt?,
+                guessEndsAt?, spyGuess?, accusationTargetId?, voteTally?, spyCaught?, voteWasTied?,
+                spyGuessCorrect?, roundWinner?
+/players/{uid}        displayName, ready, score, active, inCurrentRound, joinedAt   (public)
+/privatePlayers/{uid} role 'spy'|'agent', location (null for the spy), roundNumber (own + operator only)
+/secrets/current      locationId, spyId, roundNumber                                (operator only)
+/votes/{voterId}      targetId                                          (own + operator only)
+/rounds/{n}           the finished round: spy, location, tally, guess, winner, points (public)
+```
+
+Round-scoped fields on the session doc are all cleared when the next round is
+dealt. `roundNumber` on each private card lets a phone ignore a card from an
+earlier round if snapshots arrive out of order.
+
+### Things that are deliberate (don't "simplify" them away)
+
+- **Scoring is one transaction** (`finishSpyfallRound`) that re-checks the round
+  state first. The operator's screen can trigger a step twice (a timer tick racing
+  a snapshot); the second run finds the round already `scored` and does nothing,
+  so points can't be awarded twice.
+- **Ballots and cards are cleared at the deal, by the operator.** A player can't
+  list or delete other people's ballots, so stale ones would otherwise leak into
+  the next round and could close voting instantly.
+- **The votes listener is chosen by who the operator is *right now*** (operator:
+  all ballots; everyone else: only their own). The operator changes every round,
+  and the rules allow nothing else.
+- **The game screen is rebuilt only when data changes, never on the clock tick.**
+  The tick only rewrites the countdown text. Rebuilding every second made the
+  spy's location dropdown close under their finger.
+- **The deal only includes players recorded in `playerOrder` at Start**, so a
+  stray player document can never become a participant who never sees a card.
+
+### Spyfall limitations
+
+- **The operator's phone must stay online and open.** Every step that advances
+  the round runs there; if it closes, the round pauses until it's reopened.
+  (Same trust/availability model as Werewolf's moderator.) There is no "hand the
+  operator role to someone else mid-round".
+- **No joining after Start and no leaving a room** (same gap as Werewolf), and no
+  "end session" — the scoreboard just keeps going round by round.
+- **Deadlines use the operator's clock.** Players' countdowns are computed from
+  those timestamps on their own clocks, so a badly wrong phone clock shows a
+  slightly wrong countdown (it never changes when a step actually happens).
+- **The operator can see the secret** if they open dev tools. Fine for a
+  supervised classroom; same trust model as above.
+- **Accusation is by plurality** (unique top vote-getter), not the unanimous vote
+  of the printed game. Changing it means editing `tallySpyfallVotes` in `rules.js`.
+
 ## Known limitations
 
 - **Anyone signed in can read a session doc or its roster if they know the
@@ -208,9 +380,16 @@ missing information directly.
   the schema. Don't tighten this without also rebuilding the join flow to
   match; it's been like this on purpose more than once.
 
-- **PIN-based login** (6-digit numeric password) is a classroom
-  convenience, not real security. Fine for a supervised in-person game;
-  not appropriate for anything public.
+- **No email verification.** Anyone can sign up with any email address they
+  type, so the email is a login handle and a password-reset address, not proof
+  of identity. Fine for a classroom; add `sendEmailVerification` if that changes.
+- **Accounts can only be deleted from the Firebase console** (Authentication
+  → Users, plus the matching `users/{uid}` document). There is no in-app
+  "delete my account".
+- **There is no "leave this room" action** (Werewolf and Spyfall alike). "← All
+  games" only leaves the page; the player remains in the room and is resumed into
+  it next time they open that game, so they can't start or join a different room
+  of the same game until this one is over. Worth a deliberate design for both.
 - **No presence/reconnect indicator.** A player who closes the app can
   reopen it and resume exactly where they left off (Firebase Auth persists
   login, and `tryResumeSession()` restores the right screen), but there's
@@ -231,20 +410,57 @@ missing information directly.
 ## File structure
 
 ```
-index.html
-css/main.css
+index.html                  — log in (email + password, Google)
+signup.html                 — create an account (email + password, Google)
+hub.html                    — game picker
+games/
+  werewolf.html             — the Werewolf page (room choice + lobby + game screens)
+  spyfall.html              — the Spyfall page (same shape as Werewolf's)
+css/
+  main.css                  — shared base: theme variables, layout, buttons, cards, modal
+  werewolf.css              — Werewolf-only styles
+  spyfall.css               — Spyfall-only styles (classes prefixed sf-)
 firestore.rules
 js/
-  core/
-    firebaseConfig.js   — Firebase project config + SDK init
-    auth.js             — signup/login, username<->email mapping
-    engine.js           — session lifecycle, esc(), confirmAction(), the roster/players write helpers
-    lobby.js            — waiting room, Start Game (role assignment)
-  games/werewolf/
-    rules.js            — pure game logic: role assignment, win condition, succession, pending-Hunter lookup
-    night.js            — night-phase sequencing and resolution
-    voting.js           — day voting, manual elimination, win/succession resolution, Hunter's shot
-    narrator.js         — moderator-facing "what to say and do now" + role reference text
-    ui.js               — renders the whole post-lobby screen for both moderator and players
-  main.js               — boot, auth state, room creation/joining
+  core/                     — game-agnostic; knows nothing about any game
+    firebaseConfig.js       — Firebase project config + SDK init
+    auth.js                 — email/Google sign-in, password reset, profile, per-game room pointers, page redirects
+    auth-page-common.js     — wiring shared by the login and sign-up pages (Google button, redirects)
+    login-page.js           — wiring for index.html
+    signup-page.js          — wiring for signup.html
+    hub.js                  — wiring for hub.html (game picker + change display name)
+    ui-helpers.js           — showScreen(), esc(), generateRoomCode(), confirmAction(), shownName()
+  werewolf/
+    engine.js               — session lifecycle, dealAndStart(), the roster/players write helpers
+    lobby.js                — waiting room, Start Game
+    rules.js                — pure game logic: buildDeal, win condition, succession, pending-Hunter lookup
+    night.js                — night-phase sequencing and resolution
+    voting.js               — day voting, manual elimination, win/succession resolution, Hunter's shot
+    narrator.js             — moderator-facing "what to say and do now" + role reference text
+    ui.js                   — renders the whole post-lobby screen for both moderator and players
+    main.js                 — Werewolf page boot: profile, resume, create/join
+  spyfall/
+    rules.js                — pure: deck, constants, scoring, vote tally
+    engine.js               — create / join / start a session
+    round.js                — the round state machine (operator-run) + the small player writes
+    lobby.js                — waiting room (follows the session, so Start moves everyone on)
+    ui.js                   — the game screen
+    main.js                 — Spyfall page boot: profile, resume, create/join
 ```
+
+Pages declare their place with `<body data-root="../" data-page="games/werewolf.html">`
+(`data-root` = path back to the site root, `data-page` = this page's own path).
+Scripts are plain `<script>` tags sharing one global scope, so each game gets its
+own page and its own `js/<game>/` folder: two games never load together, so their
+function names can't collide. Keep `core/` free of anything game-specific — if two
+games end up needing the same code, move it into `core/` then, not before.
+
+### Deliberately NOT built yet
+
+- A `rooms/{code}` router (one join box for all games) — only needed if the hub
+  ever gets a universal "enter a code" field.
+- The `secrets/{group}` + `members` generalisation of `secrets/werewolfTeam` —
+  Spyfall didn't need it (its only secret is operator-only), so it still waits for
+  a game that needs a secret shared by a group.
+- Linking a password account and a Google account for the same email.
+- Email verification and an in-app "delete my account".
