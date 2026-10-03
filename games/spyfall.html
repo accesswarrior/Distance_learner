@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0f0f1a">
+  <title>Spyfall - Classroom Games</title>
+  <link rel="stylesheet" href="../css/main.css">
+  <link rel="stylesheet" href="../css/spyfall.css">
+
+  <!-- Firebase SDK (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
+</head>
+<body data-root="../" data-page="games/spyfall.html">
+  <div id="app">
+    <!-- Loading (until Firebase reports who is signed in) -->
+    <div class="screen active" id="loading-screen">
+      <div class="spinner"></div>
+      <p>Loading...</p>
+    </div>
+
+    <!-- Room choice -->
+    <div class="screen" id="lobby-choice-screen">
+      <div class="auth-card">
+        <h1 class="game-title">🕵️ Spyfall</h1>
+        <p class="tagline">One of you doesn't know where we are.</p>
+        <h2>Welcome, <span id="welcome-username"></span></h2>
+        <button id="create-room-btn" class="primary-btn">Create Session</button>
+        <div class="join-room-form">
+          <input type="text" id="join-code-input" placeholder="Room Code" maxlength="5" autocomplete="off" autocapitalize="characters">
+          <button id="join-room-btn" class="secondary-btn">Join Session</button>
+        </div>
+        <p id="lobby-choice-error" class="error-message"></p>
+        <a class="link-btn secondary-btn" href="../hub.html">← All games</a>
+        <button class="logout-btn secondary-btn">Log out</button>
+      </div>
+    </div>
+
+    <!-- Waiting room -->
+    <div class="screen" id="lobby-screen">
+      <div class="lobby-container" id="lobby-content"></div>
+    </div>
+
+    <!-- Game -->
+    <div class="screen" id="game-screen">
+      <div class="role-container" id="game-content"></div>
+    </div>
+  </div>
+
+  <!-- Core (game-agnostic) -->
+  <script src="../js/core/firebaseConfig.js"></script>
+  <script src="../js/core/auth.js"></script>
+  <script src="../js/core/ui-helpers.js"></script>
+
+  <!-- Spyfall -->
+  <script src="../js/spyfall/rules.js"></script>
+  <script src="../js/spyfall/engine.js"></script>
+  <script src="../js/spyfall/round.js"></script>
+  <script src="../js/spyfall/lobby.js"></script>
+  <script src="../js/spyfall/ui.js"></script>
+  <script src="../js/spyfall/main.js"></script>
+</body>
+</html>
