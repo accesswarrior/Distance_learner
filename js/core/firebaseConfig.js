@@ -10,12 +10,12 @@
 // collection (`werewolf_sessions`, `spyfall_sessions`, ...).
 
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyBwJzpnmSV845YrDDZYOVntL6sfFAVGaag",
+  authDomain: "access-warrior-1d789.firebaseapp.com",
+  projectId: "access-warrior-1d789",
+  storageBucket: "access-warrior-1d789.firebasestorage.app",
+  messagingSenderId: "875315539922",
+  appId: "1:875315539922:web:df434dfd4316c0a457620b"
 };
 
 // Fail loudly (instead of with a confusing Firebase error) if the config
