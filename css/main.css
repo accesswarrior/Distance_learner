@@ -169,6 +169,41 @@ button:active:not(:disabled) { transform: scale(0.98); }
 
 .info-message  { color: var(--gold); font-size: 0.85rem; margin-top: 6px; min-height: 0; }
 
+/* "Show password" checkbox. Overrides the pill styling that .auth-form gives every <input>. */
+.show-password {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 4px 0 8px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.auth-form .show-password input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+/* Live password strength bar (sign-up page) */
+.pw-meter {
+  height: 6px;
+  margin: 2px 4px 8px;
+  border-radius: 3px;
+  background: var(--surface-alt);
+  overflow: hidden;
+}
+.pw-meter-bar { height: 100%; width: 0; border-radius: 3px; transition: width 0.2s, background 0.2s; }
+.pw-level-0 { background: var(--error); }
+.pw-level-1 { background: var(--error); }
+.pw-level-2 { background: var(--gold); }
+.pw-level-3 { background: #7ed957; }
+.pw-level-4 { background: #3fbf6f; }
+.pw-match   { color: #7ed957; }
+.pw-nomatch { color: var(--error); }
+
 /* "Continue with Google": white button with the multicolour G, per Google's branding. */
 .google-btn {
   display: flex;
