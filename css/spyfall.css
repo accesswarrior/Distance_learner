@@ -1,0 +1,98 @@
+/* css/spyfall.css — Spyfall-only styles. Shared base lives in main.css.
+   Class names are prefixed "sf-" so nothing here can collide with, or depend
+   on, Werewolf's styles (some of which — the location list and the selected
+   vote button — look alike on purpose; if they ever need to change together,
+   move them into main.css then). */
+
+.sf-header {
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.sf-card {
+  background: var(--surface-alt);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  text-align: center;
+  margin: 12px 0;
+}
+.sf-agent h2 { color: var(--gold); }
+.sf-spy h2   { color: var(--accent); }
+
+.sf-card-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  text-align: center;
+  background: linear-gradient(135deg, var(--surface-alt), var(--surface));
+  border-radius: var(--radius-lg);
+  margin: 12px 0;
+}
+.sf-card-emoji { font-size: 4rem; margin-bottom: 16px; }
+
+.sf-location {
+  font-size: 2rem;
+  font-weight: bold;
+  color: var(--gold);
+  margin: 12px 0;
+  letter-spacing: 2px;
+}
+
+.sf-timer {
+  font-size: 3rem;
+  font-weight: bold;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--gold);
+  margin: 20px 0;
+}
+.sf-timer-small {
+  font-size: 1.2rem;
+  color: var(--accent);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 8px;
+}
+
+.sf-reveal-spy,
+.sf-reveal-agents {
+  text-align: center;
+  font-size: 1.4rem;
+  font-weight: bold;
+  padding: 20px;
+  margin: 12px 0;
+}
+.sf-reveal-spy    { color: var(--accent); }
+.sf-reveal-agents { color: var(--gold); }
+
+.sf-waiting { text-align: center; margin-top: 24px; }
+
+.sf-details {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  margin: 12px 0;
+  text-align: left;
+}
+.sf-details summary { cursor: pointer; font-size: 0.9rem; }
+.sf-details .player-list { margin: 10px 0 4px; }
+.sf-details .player-list li { padding: 6px 12px; font-size: 0.85rem; }
+
+.sf-vote-btn.selected { background: var(--accent); }
+
+#sf-guess-select {
+  width: 100%;
+  padding: 12px;
+  margin: 8px 0;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: var(--surface);
+  color: white;
+  font-size: 1rem;
+  text-align: center;
+}
+
+.sf-footer { margin-top: 28px; }
