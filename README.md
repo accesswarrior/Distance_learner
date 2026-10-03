@@ -1,13 +1,21 @@
-# Classroom Games
+# Hijinks
 
-A small platform of in-person party games, each played on everyone's own
-phone in the same room. **Werewolf** and **Spyfall** are built.
+Group games for friends hanging out — in a room, a park, a yard. Everyone plays
+on their own phone; the phones deal out the secrets, keep the clocks and count
+the votes, while everything social (the talking, the bluffing, the accusing)
+happens out loud between the people. One account works for every game.
+**Werewolf** and **Spyfall** are built; more are planned.
+
+Each game has its own page and its own `js/<game>/` folder, and shares one
+account system, hub and stylesheet (see "File structure" below). Adding a game
+means adding a page, a folder and a `<game>_sessions` section in
+`firestore.rules` — nothing already built needs to change.
 
 The Werewolf game: a web app for running the social-deduction game in a
-physical classroom. Everyone is in the same room on their own phone; a human
-moderator runs the actual night/day rounds, guided by an on-screen script.
-The app is the private-information layer and the stage manager — it is
-deliberately not the whole game.
+physical room. Everyone is on their own phone; a human moderator runs the
+actual night/day rounds, guided by an on-screen script. The app is the
+private-information layer and the stage manager — it is deliberately not the
+whole game.
 
 ## How a player moves through the site
 
@@ -63,14 +71,23 @@ agreeing out loud on a victim — happens in the room, not in the app.
 
 ## Firebase project
 
-This platform has its own Firebase project; nothing else uses it. Put the
-project's web-app config in `js/core/firebaseConfig.js` (until you do, every
-page shows a red "Firebase is not configured yet" bar). Each game's Firestore
-collections are prefixed with the game's name (`werewolf_sessions`,
-`spyfall_sessions`), and accounts are `users/{uid}`.
+This platform uses the Firebase project **access-warrior-1d789**; nothing else
+uses it (the Quiz Hub has its own project). The project's web-app config is in
+`js/core/firebaseConfig.js`. If you ever move to a different project, replace
+the values there (if they are left as `YOUR_...` placeholders, every page shows
+a red "Firebase is not configured yet" bar). Each game's Firestore collections
+are prefixed with the game's name (`werewolf_sessions`, `spyfall_sessions`), and
+accounts are `users/{uid}`.
 
 ### Before you go live
 
+0. **Clear the old test data** (this project previously ran the username
+   version). Authentication → Users: delete the old accounts (the ones ending
+   `@werewolf.local`). Firestore: delete the old `werewolf_users`,
+   `werewolf_usernames`, `werewolf_sessions` and `spyfall_sessions` collections
+   *including their subcollections* (the console's per-collection delete, or
+   `firebase firestore:delete <collection> --recursive`). Old accounts can't
+   sign in through the new pages and would only be clutter.
 1. **Authentication → Sign-in method:** enable **Email/Password** and
    **Google** (Google asks for a support email).
 2. **Authentication → Settings → Authorized domains:** add the domain the site
@@ -79,10 +96,14 @@ collections are prefixed with the game's name (`werewolf_sessions`,
    change the hostname, so it doesn't affect this.
 3. **Authentication → Templates:** check the password-reset email's sender name
    and wording — players see it.
-4. **Firestore → Rules:** publish `firestore.rules` from this repo as it is
-   (it is the project's complete rules file). Publish **before** pointing a
-   site at this code.
-5. Test with real accounts before trusting it with a class: at least two for
+4. **Publish `firestore.rules`** — this step is essential: the project's current
+   rules are the old ones and will reject the new `users` collection, so
+   accounts and rooms won't work until you do. Either paste the file's contents
+   into Firestore → Rules and press Publish, or from the repo folder run
+   `firebase deploy --only firestore:rules` (`firebase.json` and `.firebaserc`
+   are already set up for this project). The file is the project's complete
+   rules file, so publish it as it is.
+5. Test with real accounts before trusting it with a real group: at least two for
    Werewolf (moderator + player), and **four phones for Spyfall** (operator + 3
    players). The rules were reviewed by hand and run against a model of them,
    not against the Firestore emulator. See "Known limitations" below for what a
@@ -140,7 +161,12 @@ in a room for one game never overwrites another's. The helpers are in
 password of 8+ characters entered twice. Log-in uses one generic "Incorrect email
 or password" message for both an unknown email and a wrong password, and the
 password-reset form always reports the same result, so neither can be used to
-find out who has an account.
+find out who has an account. The sign-up page shows a live strength bar and
+message while typing, a live "passwords match" line, and a "Show password"
+checkbox (the login page has the checkbox too). The meter is advice only: the
+one hard rule is the minimum length, `MIN_PASSWORD_LENGTH` at the top of
+`core/auth.js`. For a server-side minimum, see the optional password policy in
+the Firebase console (Authentication → Settings).
 
 **Google.** `signInWithGoogle()` tries a popup and falls back to a full-page
 redirect if the browser blocks it. Google sign-in is both log-in and sign-up. If
@@ -361,8 +387,8 @@ earlier round if snapshots arrive out of order.
 - **Deadlines use the operator's clock.** Players' countdowns are computed from
   those timestamps on their own clocks, so a badly wrong phone clock shows a
   slightly wrong countdown (it never changes when a step actually happens).
-- **The operator can see the secret** if they open dev tools. Fine for a
-  supervised classroom; same trust model as above.
+- **The operator can see the secret** if they open dev tools. Fine among
+  friends in one room; same trust model as above.
 - **Accusation is by plurality** (unique top vote-getter), not the unanimous vote
   of the printed game. Changing it means editing `tallySpyfallVotes` in `rules.js`.
 
@@ -382,7 +408,7 @@ earlier round if snapshots arrive out of order.
 
 - **No email verification.** Anyone can sign up with any email address they
   type, so the email is a login handle and a password-reset address, not proof
-  of identity. Fine for a classroom; add `sendEmailVerification` if that changes.
+  of identity. Fine for friends hanging out; add `sendEmailVerification` if that changes.
 - **Accounts can only be deleted from the Firebase console** (Authentication
   → Users, plus the matching `users/{uid}` document). There is no in-app
   "delete my account".
@@ -410,7 +436,7 @@ earlier round if snapshots arrive out of order.
 ## File structure
 
 ```
-index.html                  — log in (email + password, Google)
+index.html                  — log in (email + password, Google); the site's front door
 signup.html                 — create an account (email + password, Google)
 hub.html                    — game picker
 games/
@@ -420,12 +446,15 @@ css/
   main.css                  — shared base: theme variables, layout, buttons, cards, modal
   werewolf.css              — Werewolf-only styles
   spyfall.css               — Spyfall-only styles (classes prefixed sf-)
-firestore.rules
+firestore.rules             — the project's complete Firestore security rules
+firebase.json, .firebaserc  — lets `firebase deploy --only firestore:rules` publish them
+tests/                      — automated checks (see "Tests" below)
 js/
   core/                     — game-agnostic; knows nothing about any game
     firebaseConfig.js       — Firebase project config + SDK init
     auth.js                 — email/Google sign-in, password reset, profile, per-game room pointers, page redirects
     auth-page-common.js     — wiring shared by the login and sign-up pages (Google button, redirects)
+    password-ui.js          — "Show password", strength meter and match line for the auth pages
     login-page.js           — wiring for index.html
     signup-page.js          — wiring for signup.html
     hub.js                  — wiring for hub.html (game picker + change display name)
@@ -454,6 +483,22 @@ Scripts are plain `<script>` tags sharing one global scope, so each game gets it
 own page and its own `js/<game>/` folder: two games never load together, so their
 function names can't collide. Keep `core/` free of anything game-specific — if two
 games end up needing the same code, move it into `core/` then, not before.
+
+### Tests
+
+`tests/` holds an automated end-to-end check of the login, sign-up, Google,
+hub, Werewolf and Spyfall flows. It loads the real pages in jsdom against a small
+in-memory stand-in for Firebase, so it needs no network and no account:
+
+```
+cd tests
+npm install
+npm test
+```
+
+What it can't check: Firestore **security rules** (the stand-in doesn't enforce
+them — use the Firebase emulator or real phones for that), real Google sign-in,
+and how the pages look. Run it after any change to the auth or game code.
 
 ### Deliberately NOT built yet
 
