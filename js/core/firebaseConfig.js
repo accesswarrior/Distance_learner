@@ -1,7 +1,5 @@
 // js/core/firebaseConfig.js
-// Firebase project for the whole platform. Paste YOUR project's web-app
-// config below (Firebase console -> Project settings -> Your apps -> SDK
-// setup and configuration -> "Config").
+// Firebase project for the whole platform (access-warrior-1d789).
 //
 // These values are identifiers, not secrets: every visitor's browser has to
 // have them. What protects the data is firestore.rules, not hiding this file.

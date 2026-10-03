@@ -1,9 +1,8 @@
 // js/core/ui-helpers.js
 // Game-agnostic UI helpers shared by every game page. No game rules, no
-// Firestore. Extracted verbatim from the original engine.js / main.js /
-// ui.js so Werewolf behaves exactly as before.
+// Firestore.
 
-// ---------- Screen switching (was in main.js) ----------
+// ---------- Screen switching ----------
 
 function showScreen(screenId) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -11,7 +10,7 @@ function showScreen(screenId) {
   if (screen) screen.classList.add('active');
 }
 
-// ---------- HTML escaping (was in engine.js) ----------
+// ---------- HTML escaping ----------
 //
 // esc() lives here (loaded before ui.js) because both this file's
 // confirmAction() and every interpolation in ui.js need it. It escapes the
@@ -29,7 +28,7 @@ function esc(s) {
     .replace(/'/g, '&#39;');
 }
 
-// ---------- Room codes (was in engine.js) ----------
+// ---------- Room codes ----------
 
 function generateRoomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -40,7 +39,7 @@ function generateRoomCode() {
   return code;
 }
 
-// ---------- Confirmation modal (was in engine.js) ----------
+// ---------- Confirmation modal ----------
 
 // Promise-based confirmation modal. Used by the moderator UI before any
 // consequential action. The rules and state guards are the real defense;
@@ -70,7 +69,7 @@ function confirmAction({ title, message, confirmLabel, danger }) {
   });
 }
 
-// ---------- Display names (was in ui.js) ----------
+// ---------- Display names ----------
 
 function shownName(p) {
   return esc(p ? (p.displayName || 'Unknown') : 'Unknown');

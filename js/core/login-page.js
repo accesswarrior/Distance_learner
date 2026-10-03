@@ -3,6 +3,7 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   wireAuthPage('signup.html');
+  setupShowPassword('show-password', ['password']);
 
   const emailInput = document.getElementById('email');
 

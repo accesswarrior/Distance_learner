@@ -3,6 +3,9 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   wireAuthPage('index.html');
+  setupShowPassword('show-password', ['password', 'confirm-password']);
+  setupPasswordMeter('password', 'pw-meter-bar', 'pw-hint');
+  setupConfirmMatch('password', 'confirm-password', 'confirm-hint');
 
   document.getElementById('signup-form').addEventListener('submit', async (e) => {
     e.preventDefault();
